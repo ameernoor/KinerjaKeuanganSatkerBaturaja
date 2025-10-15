@@ -6,6 +6,9 @@ from datetime import datetime
 import io
 import numpy as np
 from pathlib import Path
+import os
+import base64
+from github import Github
 
 # Konfigurasi halaman
 st.set_page_config(
@@ -168,6 +171,65 @@ def process_excel_file(uploaded_file, year):
     except Exception as e:
         st.error(f"Error memproses file: {str(e)}")
         return None, None, None
+
+# Save any file (Excel/template) to your GitHub repo
+def save_file_to_github(file_bytes, filename, folder="data"):
+    """
+    Menyimpan file (Excel atau Template) ke repository GitHub.
+    Folder default: 'data'
+    """
+    token = os.getenv("GITHUB_TOKEN") or st.secrets.get("GITHUB_TOKEN")
+    repo_name = os.getenv("GITHUB_REPO") or st.secrets.get("GITHUB_REPO")
+
+    if not token or not repo_name:
+        st.error("❌ GitHub credentials not found. Tambahkan GITHUB_TOKEN dan GITHUB_REPO di Streamlit Secrets.")
+        return
+
+    g = Github(token)
+    repo = g.get_repo(repo_name)
+    path = f"{folder}/{filename}"
+
+    try:
+        contents = repo.get_contents(path)
+        repo.update_file(contents.path, f"Update {filename}", file_bytes, contents.sha)
+        st.success(f"✅ File {filename} berhasil diperbarui di GitHub ({folder}/).")
+    except Exception:
+        repo.create_file(path, f"Upload {filename}", file_bytes)
+        st.success(f"✅ File {filename} berhasil diunggah ke GitHub ({folder}/).")
+
+
+# Load all uploaded data from GitHub (run on startup)
+def load_data_from_github():
+    """
+    Membaca semua file Excel di folder 'data' repository GitHub dan memuatnya ke session_state.
+    """
+    token = os.getenv("GITHUB_TOKEN") or st.secrets.get("GITHUB_TOKEN")
+    repo_name = os.getenv("GITHUB_REPO") or st.secrets.get("GITHUB_REPO")
+
+    if not token or not repo_name:
+        st.warning("GitHub credentials tidak ditemukan, lewati load data.")
+        return
+
+    g = Github(token)
+    repo = g.get_repo(repo_name)
+
+    try:
+        contents = repo.get_contents("data")
+    except Exception:
+        st.info("📁 Folder 'data' belum ada di repository GitHub.")
+        return
+
+    for file in contents:
+        if file.name.endswith(".xlsx"):
+            decoded = base64.b64decode(file.content)
+            df = pd.read_excel(io.BytesIO(decoded))
+            parts = file.name.replace("IKPA_", "").replace(".xlsx", "").split("_")
+            if len(parts) == 2:
+                month, year = parts
+                st.session_state.data_storage[(month, year)] = df
+
+    st.success(f"✅ {len(st.session_state.data_storage)} file IKPA berhasil dimuat dari GitHub.")
+
 
 # Path ke file template (akan diatur di session state)
 TEMPLATE_PATH = r"C:\Users\KEMENKEU\Desktop\INDIKATOR PELAKSANAAN ANGGARAN.xlsx"
@@ -685,180 +747,200 @@ def page_admin():
     # TAB 1: UPLOAD DATA
     with tab1:
         st.subheader("📤 Upload Data Bulanan")
-        
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             upload_year = st.selectbox(
                 "Pilih Tahun",
                 options=list(range(2020, 2031)),
                 index=list(range(2020, 2031)).index(datetime.now().year)
             )
-        
+
         with col2:
             st.info("ℹ️ Bulan akan dideteksi otomatis dari file Excel")
-        
+
         uploaded_file = st.file_uploader(
             "Pilih file Excel IKPA",
             type=['xlsx', 'xls'],
             help="Upload file Excel dengan format IKPA standar"
         )
-        
+
         if uploaded_file is not None:
             st.info("📄 File berhasil dipilih. Klik tombol 'Proses Data' untuk melanjutkan.")
-            
+
             if st.button("🔄 Proses Data", type="primary"):
                 with st.spinner("Memproses data..."):
                     df_processed, month, year = process_excel_file(uploaded_file, upload_year)
-                    
+
                     if df_processed is not None:
                         period_key = (month, year)
-                        
-                        # Cek duplikasi
-                        if period_key in st.session_state.data_storage:
-                            st.warning(f"⚠️ Data untuk {month} {year} sudah ada!")
-                            
-                            if st.button("⚠️ Timpa Data yang Ada"):
-                                st.session_state.data_storage[period_key] = df_processed
-                                st.success(f"✅ Data {month} {year} berhasil diperbarui!")
-                                st.balloons()
-                        else:
-                            st.session_state.data_storage[period_key] = df_processed
-                            st.success(f"✅ Data {month} {year} berhasil diunggah!")
+                        filename = f"IKPA_{month}_{year}.xlsx"
+
+                        # Simpan ke session
+                        st.session_state.data_storage[period_key] = df_processed
+
+                        # Simpan ke GitHub
+                        try:
+                            excel_bytes = io.BytesIO()
+                            with pd.ExcelWriter(excel_bytes, engine='openpyxl') as writer:
+                                # Drop kolom dict sebelum disimpan
+                                df_excel = df_processed.drop(['Bobot', 'Nilai Terbobot'], axis=1)
+                                df_excel.to_excel(writer, index=False, sheet_name='Data IKPA')
+                            excel_bytes.seek(0)
+
+                            save_file_to_github(excel_bytes.getvalue(), filename, folder="data")
+
+                            st.success(f"✅ Data {month} {year} berhasil diunggah dan disimpan di GitHub!")
                             st.balloons()
-                            
-                            # Preview data
-                            with st.expander("👁️ Preview Data"):
-                                st.dataframe(
-                                    df_processed[['Peringkat', 'Kode Satker', 'Uraian Satker', 
-                                                 'Nilai Akhir (Nilai Total/Konversi Bobot)']].head(10),
-                                    use_container_width=True
-                                )
+
+                        except Exception as e:
+                            st.error(f"❌ Gagal menyimpan ke GitHub: {e}")
+
+                        # Preview hasil
+                        with st.expander("👁️ Preview Data"):
+                            st.dataframe(
+                                df_processed[['Peringkat', 'Kode Satker', 'Uraian Satker',
+                                              'Nilai Akhir (Nilai Total/Konversi Bobot)']].head(10),
+                                use_container_width=True
+                            )
+
                     else:
                         st.error("❌ Gagal memproses file. Pastikan format file sesuai dengan template.")
     
     # TAB 2: HAPUS DATA
     with tab2:
         st.subheader("🗑️ Hapus Data Bulanan")
-        
+
         if not st.session_state.data_storage:
             st.info("ℹ️ Belum ada data yang tersimpan.")
         else:
             available_periods = sorted(st.session_state.data_storage.keys(), reverse=True)
-            
+
             period_to_delete = st.selectbox(
                 "Pilih periode yang akan dihapus",
                 options=available_periods,
                 format_func=lambda x: f"{x[0]} {x[1]}"
             )
-            
+
             col1, col2 = st.columns(2)
-            
+
             with col1:
                 st.warning(f"⚠️ Anda akan menghapus data: **{period_to_delete[0]} {period_to_delete[1]}**")
-            
+
             with col2:
                 if st.button("🗑️ Hapus Data", type="primary"):
                     del st.session_state.data_storage[period_to_delete]
-                    st.success(f"✅ Data {period_to_delete[0]} {period_to_delete[1]} berhasil dihapus!")
+                    st.success(f"✅ Data {period_to_delete[0]} {period_to_delete[1]} berhasil dihapus dari session.")
+
+                    # Hapus juga dari GitHub
+                    try:
+                        from github import Github
+                        token = st.secrets["GITHUB_TOKEN"]
+                        repo_name = st.secrets["GITHUB_REPO"]
+                        g = Github(token)
+                        repo = g.get_repo(repo_name)
+                        filename = f"data/IKPA_{period_to_delete[0]}_{period_to_delete[1]}.xlsx"
+                        file_content = repo.get_contents(filename)
+                        repo.delete_file(file_content.path, f"delete {filename}", file_content.sha)
+                        st.success("✅ File juga berhasil dihapus dari GitHub!")
+                    except Exception as e:
+                        st.warning(f"⚠️ Tidak dapat menghapus dari GitHub: {e}")
+
                     st.rerun()
-    
+
     # TAB 3: DOWNLOAD DATA
     with tab3:
         st.subheader("📥 Download Data Bersih")
-        
+
         if not st.session_state.data_storage:
             st.info("ℹ️ Belum ada data yang tersimpan.")
         else:
             available_periods = sorted(st.session_state.data_storage.keys(), reverse=True)
-            
+
             period_to_download = st.selectbox(
                 "Pilih periode yang akan didownload",
                 options=available_periods,
                 format_func=lambda x: f"{x[0]} {x[1]}"
             )
-            
+
             df_download = st.session_state.data_storage[period_to_download]
-            
+
             # Preview
             with st.expander("👁️ Preview Data"):
                 st.dataframe(df_download.head(10), use_container_width=True)
-            
+
             # Prepare download
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # Drop kolom dict untuk Excel
                 df_excel = df_download.drop(['Bobot', 'Nilai Terbobot'], axis=1)
                 df_excel.to_excel(writer, index=False, sheet_name='Data IKPA')
-            
+
             output.seek(0)
-            
+
             st.download_button(
                 label="📥 Download Excel",
                 data=output,
                 file_name=f"IKPA_{period_to_download[0]}_{period_to_download[1]}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-    
+
     # TAB 4: DOWNLOAD TEMPLATE
     with tab4:
         st.subheader("📋 Download Template Excel")
-        
+
         st.info("""
         📝 **Panduan Penggunaan Template:**
-        
-        1. Template ini adalah contoh format Excel yang harus diikuti
+        1. Template ini adalah contoh format Excel yang harus diikuti.
         2. Baris 1: Judul "INDIKATOR PELAKSANAAN ANGGARAN"
-        3. Baris 2: "Sampai Dengan : [NAMA BULAN]" (contoh: JANUARI, FEBRUARI, dll)
+        3. Baris 2: "Sampai Dengan : [NAMA BULAN]"
         4. Baris 3-4: Header kolom (sudah terformat)
         5. Baris 5 dst: Data satker (4 baris per satker)
-        
-        ⚠️ **Perhatian:**
-        - Setiap satker harus memiliki tepat 4 baris data (Nilai, Bobot, Nilai Akhir, Nilai Aspek)
-        - Kolom kode (KPPN, BA, Satker) akan otomatis diproses sebagai teks
-        - Pastikan format angka konsisten (gunakan titik untuk desimal)
+        ⚠️ Pastikan format angka konsisten (gunakan titik untuk desimal)
         """)
-        
-        # Opsi 1: Download dari file template yang sudah ada
-        template_data = get_template_file()
-        
+
+        # Ambil template dari GitHub (folder templates/)
+        try:
+            from github import Github
+            token = st.secrets["GITHUB_TOKEN"]
+            repo_name = st.secrets["GITHUB_REPO"]
+            g = Github(token)
+            repo = g.get_repo(repo_name)
+            file_content = repo.get_contents("templates/Template_IKPA.xlsx")
+            template_data = base64.b64decode(file_content.content)
+        except Exception:
+            template_data = get_template_file()
+
         if template_data:
             st.download_button(
-                label="📥 Download Template Excel (dari file asli)",
+                label="📥 Download Template Excel (dari GitHub atau lokal)",
                 data=template_data,
                 file_name="Template_IKPA.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.warning("⚠️ File template tidak ditemukan di lokasi default.")
-            st.info(f"📁 Lokasi default: `{TEMPLATE_PATH}`")
-            
-            # Opsi 2: Upload template baru
-            st.markdown("---")
-            st.subheader("📤 Upload Template Baru")
-            st.info("Jika Anda ingin menggunakan file template yang berbeda, upload di sini:")
-            
-            template_upload = st.file_uploader(
-                "Upload file template IKPA",
-                type=['xlsx', 'xls'],
-                key="template_uploader"
-            )
-            
-            if template_upload:
-                st.session_state.template_file = template_upload.read()
-                st.success("✅ Template berhasil di-upload! Sekarang Anda bisa mendownloadnya.")
-                
-                st.download_button(
-                    label="📥 Download Template Excel (yang baru di-upload)",
-                    data=st.session_state.template_file,
-                    file_name="Template_IKPA.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-        
+            st.warning("⚠️ Template belum ditemukan di GitHub maupun lokal.")
+
         st.markdown("---")
-        
+        st.subheader("📤 Upload Template Baru")
+        st.info("Jika Anda ingin memperbarui template di GitHub, upload di sini:")
+
+        template_upload = st.file_uploader(
+            "Upload file template IKPA",
+            type=['xlsx', 'xls'],
+            key="template_uploader"
+        )
+
+        if template_upload:
+            try:
+                save_file_to_github(template_upload.read(), "Template_IKPA.xlsx", folder="templates")
+                st.success("✅ Template berhasil di-upload dan disimpan di GitHub!")
+            except Exception as e:
+                st.error(f"❌ Gagal upload template ke GitHub: {e}")
+
+        st.markdown("---")
         st.subheader("📊 Informasi Data Tersimpan")
-        
+
         if st.session_state.data_storage:
             summary_data = []
             for period, df in sorted(st.session_state.data_storage.items(), reverse=True):
@@ -868,15 +950,19 @@ def page_admin():
                     'Jumlah Satker': len(df),
                     'Rata-rata Nilai Akhir': df['Nilai Akhir (Nilai Total/Konversi Bobot)'].mean()
                 })
-            
+
             df_summary = pd.DataFrame(summary_data)
-            st.dataframe(df_summary.style.format({'Rata-rata Nilai Akhir': '{:.2f}'}), 
-                        use_container_width=True)
+            st.dataframe(df_summary.style.format({'Rata-rata Nilai Akhir': '{:.2f}'}), use_container_width=True)
         else:
             st.info("ℹ️ Belum ada data yang tersimpan.")
 
 # MAIN APP
 def main():
+    # 🔄 Load data dari GitHub jika belum ada data di session
+    if not st.session_state.data_storage:
+        with st.spinner("🔄 Memuat data dari GitHub..."):
+            load_data_from_github()
+
     # Sidebar navigation
     st.sidebar.title("🧭 Navigasi")
     st.sidebar.markdown("---")
