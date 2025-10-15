@@ -9,6 +9,7 @@ from pathlib import Path
 import os
 import base64
 from github import Github
+from github import Auth
 
 # Konfigurasi halaman
 st.set_page_config(
@@ -185,7 +186,7 @@ def save_file_to_github(file_bytes, filename, folder="data"):
         st.error("❌ GitHub credentials not found. Tambahkan GITHUB_TOKEN dan GITHUB_REPO di Streamlit Secrets.")
         return
 
-    g = Github(token)
+    g = Github(auth=Auth.Token(token))
     repo = g.get_repo(repo_name)
     path = f"{folder}/{filename}"
 
@@ -202,6 +203,7 @@ def save_file_to_github(file_bytes, filename, folder="data"):
 def load_data_from_github():
     """
     Membaca semua file Excel di folder 'data' repository GitHub dan memuatnya ke session_state.
+    Menstandarkan struktur kolom agar konsisten dengan hasil process_excel_file().
     """
     token = os.getenv("GITHUB_TOKEN") or st.secrets.get("GITHUB_TOKEN")
     repo_name = os.getenv("GITHUB_REPO") or st.secrets.get("GITHUB_REPO")
@@ -210,7 +212,7 @@ def load_data_from_github():
         st.warning("GitHub credentials tidak ditemukan, lewati load data.")
         return
 
-    g = Github(token)
+    g = Github(auth=Auth.Token(token))
     repo = g.get_repo(repo_name)
 
     try:
@@ -219,14 +221,54 @@ def load_data_from_github():
         st.info("📁 Folder 'data' belum ada di repository GitHub.")
         return
 
+    st.session_state.data_storage = {}
+
     for file in contents:
-        if file.name.endswith(".xlsx"):
-            decoded = base64.b64decode(file.content)
-            df = pd.read_excel(io.BytesIO(decoded))
-            parts = file.name.replace("IKPA_", "").replace(".xlsx", "").split("_")
-            if len(parts) == 2:
-                month, year = parts
-                st.session_state.data_storage[(month, year)] = df
+        if not file.name.endswith(".xlsx"):
+            continue
+
+        decoded = base64.b64decode(file.content)
+        df = pd.read_excel(io.BytesIO(decoded))
+
+        # Extract month-year from filename
+        parts = file.name.replace("IKPA_", "").replace(".xlsx", "").split("_")
+        if len(parts) != 2:
+            continue
+        month, year = parts
+
+        # --- 🔧 Standardize columns just like process_excel_file ---
+        if 'Uraian Satker' in df.columns and 'Kode Satker' in df.columns:
+            df['Satker'] = df['Uraian Satker'].astype(str) + ' (' + df['Kode Satker'].astype(str) + ')'
+        elif 'Kode Satker' in df.columns:
+            df['Satker'] = df['Kode Satker'].astype(str)
+        else:
+            df['Satker'] = df.index.astype(str)
+
+        # Ensure numeric columns are properly typed
+        numeric_cols = [
+            'Nilai Akhir (Nilai Total/Konversi Bobot)',
+            'Nilai Total', 'Konversi Bobot',
+            'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran',
+            'Belanja Kontraktual', 'Penyelesaian Tagihan', 'Pengelolaan UP dan TUP',
+            'Capaian Output'
+        ]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # Add sorting and label columns if missing
+        df['Bulan'] = df.get('Bulan', month)
+        df['Tahun'] = df.get('Tahun', year)
+        df['Period'] = f"{month} {year}"
+        df['Period_Sort'] = f"{year}-{month}"
+
+        # Add ranking if missing
+        if 'Peringkat' not in df.columns and 'Nilai Akhir (Nilai Total/Konversi Bobot)' in df.columns:
+            df = df.sort_values('Nilai Akhir (Nilai Total/Konversi Bobot)', ascending=False)
+            df['Peringkat'] = range(1, len(df) + 1)
+
+        # Save back into session state
+        st.session_state.data_storage[(month, year)] = df
 
     st.success(f"✅ {len(st.session_state.data_storage)} file IKPA berhasil dimuat dari GitHub.")
 
@@ -624,7 +666,7 @@ def page_trend():
     selected_satker = st.multiselect(
         "Pilih Satker",
         options=all_satker,
-        default=[s for s in all_satker if any(code in s for code in bottom_10_default)][:10]
+        default=[s for s in all_satker if any(str(code) in s for code in bottom_10_default)][:10]
     )
     
     if not selected_satker:
@@ -838,7 +880,7 @@ def page_admin():
                         from github import Github
                         token = st.secrets["GITHUB_TOKEN"]
                         repo_name = st.secrets["GITHUB_REPO"]
-                        g = Github(token)
+                        g = Github(auth=Auth.Token(token))
                         repo = g.get_repo(repo_name)
                         filename = f"data/IKPA_{period_to_delete[0]}_{period_to_delete[1]}.xlsx"
                         file_content = repo.get_contents(filename)
@@ -904,7 +946,7 @@ def page_admin():
             from github import Github
             token = st.secrets["GITHUB_TOKEN"]
             repo_name = st.secrets["GITHUB_REPO"]
-            g = Github(token)
+            g = Github(auth=Auth.Token(token))
             repo = g.get_repo(repo_name)
             file_content = repo.get_contents("templates/Template_IKPA.xlsx")
             template_data = base64.b64decode(file_content.content)
