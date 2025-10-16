@@ -244,6 +244,12 @@ def load_data_from_github():
         else:
             df['Satker'] = df.index.astype(str)
 
+        # Ensure kode satker is string
+        if 'Kode Satker' in df.columns:
+            df['Kode Satker'] = df['Kode Satker'].astype(str)
+        else:
+            df['Kode Satker'] = df.index.astype(str)
+
         # Ensure numeric columns are properly typed
         numeric_cols = [
             'Nilai Akhir (Nilai Total/Konversi Bobot)',
@@ -268,7 +274,8 @@ def load_data_from_github():
             df['Peringkat'] = range(1, len(df) + 1)
 
         # Save back into session state
-        st.session_state.data_storage[(month, year)] = df
+        # ensure month/year are strings for consistent keys across uploaded vs github-loaded files
+        st.session_state.data_storage[(str(month), str(year))] = df
 
     st.success(f"✅ {len(st.session_state.data_storage)} file IKPA berhasil dimuat dari GitHub.")
 
@@ -657,16 +664,32 @@ def page_trend():
         )
     
     # Pilih satker
-    latest_period = sorted(st.session_state.data_storage.keys(), reverse=True)[0]
-    latest_df = st.session_state.data_storage[latest_period]
-    bottom_10_default = latest_df.nsmallest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')['Kode Satker'].tolist()
+    # All keys are (month_str, year_str). To sort by year then month, create sortable key:
+    def period_sort_key(k):
+        mon, yr = k
+        # convert year to int if possible, month remain string but sorting will be stable for same year
+        try:
+            y = int(yr)
+        except:
+            y = yr
+        return (y, mon)
+
+    latest_period = sorted(st.session_state.data_storage.keys(), key=period_sort_key, reverse=True)[0]
+    latest_df = st.session_state.data_storage[latest_period].copy()
+    # Make sure 'Kode Satker' exists and is a string
+    if 'Kode Satker' in latest_df.columns:
+        latest_df['Kode Satker'] = latest_df['Kode Satker'].astype(str)
+    else:
+        latest_df['Kode Satker'] = latest_df.index.astype(str)
+
+    bottom_10_default = latest_df.nsmallest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')['Kode Satker'].astype(str).tolist()
     
     # use the new 'Satker' column for selection (unique)
     all_satker = sorted(df_all['Satker'].unique())
     selected_satker = st.multiselect(
-        "Pilih Satker",
-        options=all_satker,
-        default=[s for s in all_satker if any(str(code) in s for code in bottom_10_default)][:10]
+    "Pilih Satker",
+    options=all_satker,
+    default=[s for s in all_satker if any(str(code) in s for code in bottom_10_default)][:10]
     )
     
     if not selected_satker:
@@ -815,11 +838,24 @@ def page_admin():
                 with st.spinner("Memproses data..."):
                     df_processed, month, year = process_excel_file(uploaded_file, upload_year)
 
+                    numeric_cols = [
+                        'Nilai Akhir (Nilai Total/Konversi Bobot)',
+                        'Nilai Total', 'Konversi Bobot',
+                        'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran',
+                        'Belanja Kontraktual', 'Penyelesaian Tagihan', 'Pengelolaan UP dan TUP',
+                        'Capaian Output'
+                    ]
                     if df_processed is not None:
-                        period_key = (month, year)
-                        filename = f"IKPA_{month}_{year}.xlsx"
+                        for col in numeric_cols:
+                            if col in df_processed.columns:
+                                df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce').fillna(0)
 
+                    if df_processed is not None:
                         # Simpan ke session
+                        period_key = (str(month), str(year))     # <-- ensure string types
+                        # ensure Kode Satker string and numeric cols correct
+                        df_processed['Kode Satker'] = df_processed['Kode Satker'].astype(str)
+
                         st.session_state.data_storage[period_key] = df_processed
 
                         # Simpan ke GitHub
@@ -827,7 +863,7 @@ def page_admin():
                             excel_bytes = io.BytesIO()
                             with pd.ExcelWriter(excel_bytes, engine='openpyxl') as writer:
                                 # Drop kolom dict sebelum disimpan
-                                df_excel = df_processed.drop(['Bobot', 'Nilai Terbobot'], axis=1)
+                                df_excel = df_processed.drop(['Bobot', 'Nilai Terbobot'], axis=1, errors='ignore')
                                 df_excel.to_excel(writer, index=False, sheet_name='Data IKPA')
                             excel_bytes.seek(0)
 
@@ -915,7 +951,12 @@ def page_admin():
             # Prepare download
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_excel = df_download.drop(['Bobot', 'Nilai Terbobot'], axis=1)
+                # Drop only if present; ignore if not present
+                df_excel = df_download.drop(['Bobot', 'Nilai Terbobot'], axis=1, errors='ignore')
+                # If df_excel is empty, create a minimal sheet to avoid openpyxl "no visible sheet" error
+                if df_excel.shape[0] == 0 or df_excel.shape[1] == 0:
+                    # create a minimal DataFrame with a placeholder column
+                    df_excel = pd.DataFrame({'No data': []})
                 df_excel.to_excel(writer, index=False, sheet_name='Data IKPA')
 
             output.seek(0)
