@@ -11,6 +11,12 @@ import base64
 from github import Github
 from github import Auth
 
+# define month order map
+MONTH_ORDER = {
+    "JANUARI": 1, "FEBRUARI": 2, "MARET": 3, "APRIL": 4, "MEI": 5, "JUNI": 6,
+    "JULI": 7, "AGUSTUS": 8, "SEPTEMBER": 9, "OKTOBER": 10, "NOVEMBER": 11, "DESEMBER": 12
+}
+
 # Konfigurasi halaman
 st.set_page_config(
     page_title="Dashboard IKPA KPPN Baturaja",
@@ -197,7 +203,8 @@ def load_data_from_github():
         df['Tahun'] = df.get('Tahun', year)
         df['Source'] = 'GitHub'
         df['Period'] = f"{month} {year}"
-        df['Period_Sort'] = f"{year}-{month}"
+        month_num = MONTH_ORDER.get(month.upper(), 0)
+        df['Period_Sort'] = f"{int(year):04d}-{month_num:02d}"
 
         if 'Peringkat' not in df.columns and 'Nilai Akhir (Nilai Total/Konversi Bobot)' in df.columns:
             df = df.sort_values('Nilai Akhir (Nilai Total/Konversi Bobot)', ascending=False)
@@ -330,7 +337,11 @@ def page_dashboard():
         return
     
     # Dapatkan data terbaru
-    all_periods = sorted(st.session_state.data_storage.keys(), reverse=True)
+    all_periods = sorted(
+        st.session_state.data_storage.keys(),
+        key=lambda x: (int(x[1]), MONTH_ORDER.get(x[0].upper(), 0)),
+        reverse=True
+    )
     
     if not all_periods:
         st.warning("⚠️ Belum ada data yang tersedia.")
@@ -343,7 +354,7 @@ def page_dashboard():
             "📅 Pilih Periode",
             options=all_periods,
             index=0,
-            format_func=lambda x: f"{x[0]} {x[1]}"
+            format_func=lambda x: f"{x[0].capitalize()} {x[1]}"
         )
     
     df = st.session_state.data_storage[selected_period]
@@ -548,6 +559,8 @@ def page_trend():
     col1, col2, col3 = st.columns(3)
     
     with col1:
+        df_all['Month_Num'] = df_all['Bulan'].str.upper().map(MONTH_ORDER)
+        df_all['Period_Sort'] = df_all.apply(lambda x: f"{int(x['Tahun']):04d}-{int(x['Month_Num']):02d}", axis=1)
         available_periods = sorted(df_all['Period_Sort'].unique())
         start_period = st.selectbox(
             "Periode Awal",
@@ -630,9 +643,17 @@ def page_trend():
     fig = go.Figure()
     for satker in selected_satker:
         df_satker = df_plot[df_plot['Satker'] == satker].sort_values('Period_Sort')
-        
+
+        # Ensure x-axis uses correct chronological month order
         fig.add_trace(go.Scatter(
-            x=df_satker['Period'],
+            x=pd.Categorical(
+                df_satker['Period'],
+                categories=[f"{m} {y}" for y, m in sorted(
+                    {(int(x['Tahun']), x['Bulan'].upper()) for _, x in df_all.iterrows()},
+                    key=lambda t: (t[0], MONTH_ORDER.get(t[1], 0))
+                )],
+                ordered=True
+            ),
             y=df_satker[selected_metric],
             mode='lines+markers',
             name=satker,
@@ -754,7 +775,34 @@ def page_admin():
         uploaded_file = st.file_uploader("Pilih file Excel IKPA", type=['xlsx', 'xls'])
 
         if uploaded_file is not None:
-            if st.button("🔄 Proses Data", type="primary"):
+            # ✅ PRE-CHECK: Detect if file will replace existing data
+            # We need to peek at the file to get the month
+            try:
+                df_temp = pd.read_excel(uploaded_file, header=None)
+                month_text = str(df_temp.iloc[1, 0])
+                month_preview = month_text.split(":")[-1].strip() if ":" in month_text else "UNKNOWN"
+                period_key_preview = (str(month_preview), str(upload_year))
+                
+                # Reset file pointer after preview
+                uploaded_file.seek(0)
+                
+                # ✅ Show warning and checkbox BEFORE the button
+                if period_key_preview in st.session_state.data_storage:
+                    st.warning(f"⚠️ Data untuk **{month_preview} {upload_year}** sudah ada di sistem dan GitHub.")
+                    confirm_replace = st.checkbox(
+                        "✅ Saya yakin ingin mengganti data yang sudah ada.", 
+                        key=f"confirm_replace_{month_preview}_{upload_year}"
+                    )
+                else:
+                    confirm_replace = True  # No replacement needed
+                    st.info(f"📝 File baru akan diunggah untuk periode: **{month_preview} {upload_year}**")
+            
+            except Exception as e:
+                st.error(f"❌ Gagal membaca preview file: {e}")
+                confirm_replace = False
+
+            # ✅ Button only active if confirmed (or no replacement needed)
+            if st.button("🔄 Proses Data", type="primary", disabled=not confirm_replace):
                 with st.spinner("Memproses data..."):
                     df_processed, month, year = process_excel_file(uploaded_file, upload_year)
 
@@ -765,16 +813,7 @@ def page_admin():
                     period_key = (str(month), str(year))
                     filename = f"IKPA_{month}_{year}.xlsx"
 
-                    # ✅ Ask confirmation if data already exists
-                    if period_key in st.session_state.data_storage:
-                        st.warning(f"⚠️ Data untuk **{month} {year}** sudah ada di sistem dan GitHub.")
-                        confirm_replace = st.checkbox("Saya yakin ingin mengganti data yang sudah ada.", key=f"confirm_replace_{month}_{year}")
-
-                        if not confirm_replace:
-                            st.info("🕒 Unggahan dibatalkan sampai Anda mencentang konfirmasi.")
-                            st.stop()
-
-                    # ✅ Proceed upload
+                    # ✅ Proceed upload (confirmation already done above)
                     try:
                         df_processed['Kode Satker'] = df_processed['Kode Satker'].astype(str)
                         st.session_state.data_storage[period_key] = df_processed
@@ -787,7 +826,7 @@ def page_admin():
 
                         save_file_to_github(excel_bytes.getvalue(), filename, folder="data")
 
-                        # ✅ Professional success feedback
+                        # ✅ Success feedback
                         st.toast(f"✅ Data {month} {year} berhasil diunggah & disimpan di GitHub.", icon="✅")
                         st.success(f"✅ Data {month} {year} tersimpan dengan aman di sistem dan GitHub.")
                         st.info("💾 Data berhasil diperbarui. Anda dapat melihatnya di halaman Dashboard Utama.")
@@ -795,7 +834,7 @@ def page_admin():
 
                         st.session_state.activity_log.append({
                             "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "Aksi": "Upload/Replace",
+                            "Aksi": "Upload/Replace" if period_key in st.session_state.data_storage else "Upload",
                             "Periode": f"{month} {year}",
                             "Status": "✅ Sukses disimpan ke GitHub"
                         })
@@ -814,7 +853,7 @@ def page_admin():
             period_to_delete = st.selectbox(
                 "Pilih periode yang akan dihapus",
                 options=available_periods,
-                format_func=lambda x: f"{x[0]} {x[1]}"
+                format_func=lambda x: f"{x[0].capitalize()} {x[1]}"
             )
 
             month, year = period_to_delete
@@ -898,7 +937,7 @@ def page_admin():
             period_to_download = st.selectbox(
                 "Pilih periode yang akan didownload",
                 options=available_periods,
-                format_func=lambda x: f"{x[0]} {x[1]}"
+                format_func=lambda x: f"{x[0].capitalize()} {x[1]}"
             )
 
             df_download = st.session_state.data_storage[period_to_download]
@@ -999,7 +1038,7 @@ def page_admin():
 
     # TAB 5: RIWAYAT AKTIVITAS
     with tab5:
-        st.subheader("🕓 Log Aktivitas GitHub (Upload / Delete)")
+        st.subheader("📖 Log Aktivitas GitHub (Upload / Delete)")
         st.info("Log ini merekam setiap unggahan, penggantian, dan penghapusan data ke/dari GitHub.")
 
         if not st.session_state.activity_log:
