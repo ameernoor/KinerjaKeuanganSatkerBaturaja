@@ -123,11 +123,12 @@ def process_excel_file(uploaded_file, year):
 
 # Save any file (Excel/template) to your GitHub repo
 def save_file_to_github(file_bytes, filename, folder="data"):
-    token = os.getenv("GITHUB_TOKEN") or st.secrets.get("GITHUB_TOKEN")
-    repo_name = os.getenv("GITHUB_REPO") or st.secrets.get("GITHUB_REPO")
+    token = st.secrets.get("GITHUB_TOKEN")
+    repo_name = st.secrets.get("GITHUB_REPO")
 
     if not token or not repo_name:
-        st.error("❌ GitHub credentials not found.")
+        st.stop()
+        st.error("❌ Gagal mengakses GitHub: GITHUB_TOKEN atau GITHUB_REPO tidak ditemukan di secrets.")
         return
 
     g = Github(auth=Auth.Token(token))
@@ -145,11 +146,12 @@ def save_file_to_github(file_bytes, filename, folder="data"):
 
 # Load all uploaded data from GitHub (run on startup)
 def load_data_from_github():
-    token = os.getenv("GITHUB_TOKEN") or st.secrets.get("GITHUB_TOKEN")
-    repo_name = os.getenv("GITHUB_REPO") or st.secrets.get("GITHUB_REPO")
+    token = st.secrets.get("GITHUB_TOKEN")
+    repo_name = st.secrets.get("GITHUB_REPO")
 
     if not token or not repo_name:
-        st.warning("GitHub credentials tidak ditemukan.")
+        st.stop()
+        st.error("❌ Gagal mengakses GitHub: GITHUB_TOKEN atau GITHUB_REPO tidak ditemukan di secrets.")
         return
 
     g = Github(auth=Auth.Token(token))
@@ -715,6 +717,17 @@ def page_admin():
         return
 
     st.success("✅ Anda telah login sebagai Admin")
+    # 🧩 Optional: Debug GitHub connection
+    with st.expander("🧩 Debug GitHub Connection"):
+        try:
+            token = st.secrets["GITHUB_TOKEN"]
+            repo_name = st.secrets["GITHUB_REPO"]
+            g = Github(auth=Auth.Token(token))
+            repo = g.get_repo(repo_name)
+            st.success(f"Terhubung ke GitHub repo: {repo.full_name}")
+        except Exception as e:
+            st.error(f"❌ Gagal terhubung ke GitHub: {e}")
+    
     if st.button("🚪 Logout"):
         st.session_state.authenticated = False
         st.rerun()
@@ -778,7 +791,7 @@ def page_admin():
                         st.toast(f"✅ Data {month} {year} berhasil diunggah & disimpan di GitHub.", icon="✅")
                         st.success(f"✅ Data {month} {year} tersimpan dengan aman di sistem dan GitHub.")
                         st.info("💾 Data berhasil diperbarui. Anda dapat melihatnya di halaman Dashboard Utama.")
-                        st.snow()  # more subtle and elegant than balloons
+                        st.snow()
 
                         st.session_state.activity_log.append({
                             "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -850,30 +863,28 @@ def page_admin():
 
                     st.toast(f"🗑️ File {full_path} berhasil dihapus dari GitHub.", icon="✅")
                     st.success(f"✅ File {month} {year} dihapus dari GitHub dan lokal.")
-                    st.balloons()
-
+                    st.snow()
                     st.session_state.activity_log.append({
                         "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "Aksi": "Hapus",
                         "Periode": f"{month} {year}",
                         "Status": "🗑️ Dihapus dari GitHub dan lokal"
                     })
+                    st.info("🔁 Memuat ulang halaman untuk memperbarui tampilan data...")
+                    st.rerun()                    
 
                 except Exception as e:
-                    # ✅ Show full error details in a visible expander for debugging
+                    st.error(f"❌ Gagal menghapus file dari GitHub untuk {month} {year}.")
                     with st.expander("⚠️ Rincian Error Penghapusan"):
                         st.exception(e)
 
-                    st.error(f"❌ Gagal menghapus file dari GitHub untuk {month} {year}.")
                     st.session_state.activity_log.append({
                         "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "Aksi": "Hapus",
                         "Periode": f"{month} {year}",
                         "Status": f"⚠️ Gagal menghapus: {e}"
                     })
-
-                st.info("🔁 Memuat ulang halaman untuk memperbarui tampilan data...")
-                st.rerun()
+                    st.stop()  # ❌ Stop instead of rerun, so error stays visible
 
     # TAB 3: DOWNLOAD DATA
     with tab3:
@@ -932,7 +943,6 @@ def page_admin():
 
         # Ambil template dari GitHub (folder templates/)
         try:
-            from github import Github
             token = st.secrets["GITHUB_TOKEN"]
             repo_name = st.secrets["GITHUB_REPO"]
             g = Github(auth=Auth.Token(token))
