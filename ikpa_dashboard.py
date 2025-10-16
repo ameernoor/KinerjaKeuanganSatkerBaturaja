@@ -18,9 +18,12 @@ st.set_page_config(
     layout="wide"
 )
 
-# Inisialisasi session state untuk menyimpan data
+# Inisialisasi session state untuk menyimpan data dan aktivitas
 if 'data_storage' not in st.session_state:
     st.session_state.data_storage = {}
+
+if 'activity_log' not in st.session_state:
+    st.session_state.activity_log = []  # Each entry: dict with timestamp, action, period, status
 
 # Fungsi untuk memproses file Excel
 def process_excel_file(uploaded_file, year):
@@ -717,11 +720,12 @@ def page_admin():
         st.rerun()
 
     st.markdown("---")
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📤 Upload Data", 
         "🗑️ Hapus Data", 
         "📥 Download Data", 
-        "📋 Download Template"
+        "📋 Download Template", 
+        "🕓 Riwayat Aktivitas"
     ])
 
     # TAB 1: UPLOAD DATA
@@ -776,6 +780,12 @@ def page_admin():
                         st.info("💾 Data berhasil diperbarui. Anda dapat melihatnya di halaman Dashboard Utama.")
                         st.snow()  # more subtle and elegant than balloons
 
+                        st.session_state.activity_log.append({
+                            "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "Aksi": "Upload/Replace",
+                            "Periode": f"{month} {year}",
+                            "Status": "✅ Sukses disimpan ke GitHub"
+                        })
                     except Exception as e:
                         st.error(f"❌ Gagal menyimpan ke GitHub: {e}")
         
@@ -813,20 +823,54 @@ def page_admin():
 
                 # 2️⃣ Hapus juga dari GitHub
                 try:
-                    token = st.secrets["GITHUB_TOKEN"]
-                    repo_name = st.secrets["GITHUB_REPO"]
+                    token = st.secrets.get("GITHUB_TOKEN")
+                    repo_name = st.secrets.get("GITHUB_REPO")
+
+                    if not token or not repo_name:
+                        raise ValueError("GitHub credentials tidak ditemukan di secrets.")
+
                     g = Github(auth=Auth.Token(token))
                     repo = g.get_repo(repo_name)
+                    full_path = f"data/IKPA_{month}_{year}.xlsx"
 
-                    contents = repo.get_contents(filename)
-                    repo.delete_file(contents.path, f"delete {filename}", contents.sha)
+                    contents = repo.get_contents(full_path)
 
-                    st.toast(f"✅ File {filename} juga berhasil dihapus dari GitHub.", icon="🗑️")
-                    st.success(f"✅ File GitHub untuk {month} {year} berhasil dihapus.")
-                    st.snow()
+                    # Handle both file and list-of-files cases
+                    if isinstance(contents, list):
+                        target = next((c for c in contents if c.path == full_path), None)
+                        if not target:
+                            raise FileNotFoundError(f"File {full_path} tidak ditemukan di GitHub.")
+                        contents = target
+
+                    repo.delete_file(
+                        contents.path,
+                        message=f"🗑️ delete {full_path}",
+                        sha=contents.sha
+                    )
+
+                    st.toast(f"🗑️ File {full_path} berhasil dihapus dari GitHub.", icon="✅")
+                    st.success(f"✅ File {month} {year} dihapus dari GitHub dan lokal.")
+                    st.balloons()
+
+                    st.session_state.activity_log.append({
+                        "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Aksi": "Hapus",
+                        "Periode": f"{month} {year}",
+                        "Status": "🗑️ Dihapus dari GitHub dan lokal"
+                    })
 
                 except Exception as e:
-                    st.warning(f"⚠️ Tidak dapat menghapus dari GitHub (mungkin sudah dihapus): {e}")
+                    # ✅ Show full error details in a visible expander for debugging
+                    with st.expander("⚠️ Rincian Error Penghapusan"):
+                        st.exception(e)
+
+                    st.error(f"❌ Gagal menghapus file dari GitHub untuk {month} {year}.")
+                    st.session_state.activity_log.append({
+                        "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Aksi": "Hapus",
+                        "Periode": f"{month} {year}",
+                        "Status": f"⚠️ Gagal menghapus: {e}"
+                    })
 
                 st.info("🔁 Memuat ulang halaman untuk memperbarui tampilan data...")
                 st.rerun()
@@ -942,6 +986,36 @@ def page_admin():
             st.dataframe(df_summary.style.format({'Rata-rata Nilai Akhir': '{:.2f}'}), use_container_width=True)
         else:
             st.info("ℹ️ Belum ada data yang tersimpan.")
+
+    # TAB 5: RIWAYAT AKTIVITAS
+    with tab5:
+        st.subheader("🕓 Log Aktivitas GitHub (Upload / Delete)")
+        st.info("Log ini merekam setiap unggahan, penggantian, dan penghapusan data ke/dari GitHub.")
+
+        if not st.session_state.activity_log:
+            st.warning("Belum ada aktivitas tercatat.")
+        else:
+            df_log = pd.DataFrame(st.session_state.activity_log)
+            df_log = df_log[::-1].reset_index(drop=True)  # show latest first
+            st.dataframe(
+                df_log.style.format(na_rep="-"),
+                use_container_width=True,
+                height=400
+            )
+
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                if st.button("🧹 Bersihkan Log"):
+                    st.session_state.activity_log = []
+                    st.success("🧹 Log aktivitas telah dibersihkan.")
+                    st.rerun()
+            with col2:
+                st.download_button(
+                    label="📥 Unduh Log Aktivitas (Excel)",
+                    data=df_log.to_csv(index=False).encode('utf-8'),
+                    file_name="Log_Aktivitas_GitHub.csv",
+                    mime="text/csv"
+                )
 
 # ===============================
 # 🔹 MAIN APP
