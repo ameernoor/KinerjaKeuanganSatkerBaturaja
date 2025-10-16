@@ -28,72 +28,38 @@ def process_excel_file(uploaded_file, year):
     Memproses file Excel IKPA sesuai struktur yang telah ditentukan
     """
     try:
-        # Baca file Excel
         df_raw = pd.read_excel(uploaded_file, header=None)
         
-        # 1. Ekstrak bulan dari baris ke-2 (index 1)
+        # 1️⃣ Ekstrak bulan dari baris ke-2 (index 1)
         month_text = str(df_raw.iloc[1, 0])
         month = month_text.split(":")[-1].strip() if ":" in month_text else "UNKNOWN"
         
-        # 2. Ekstrak header dari baris 3 dan 4 (index 2 dan 3)
-        header_row3 = df_raw.iloc[2]
-        header_row4 = df_raw.iloc[3]
-        
-        # Mapping kolom dasar
-        base_columns = ['No', 'Kode KPPN', 'Kode BA', 'Kode Satker', 'Uraian Satker', 'Keterangan']
-        
-        # Mapping komponen dan aspek
-        component_columns = [
-            'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran', 
-            'Belanja Kontraktual', 'Penyelesaian Tagihan', 'Pengelolaan UP dan TUP', 
-            'Capaian Output'
-        ]
-        
-        summary_columns = [
-            'Nilai Total', 'Konversi Bobot', 'Dispensasi SPM (Pengurang)', 
-            'Nilai Akhir (Nilai Total/Konversi Bobot)'
-        ]
-        
-        # Tambahkan kolom aspek
-        aspect_columns = [
-            'Kualitas Perencanaan Anggaran',
-            'Kualitas Pelaksanaan Anggaran', 
-            'Kualitas Hasil Pelaksanaan Anggaran'
-        ]
-        
-        all_columns = base_columns + aspect_columns + component_columns + summary_columns
-        
-        # 3. Ekstrak data mulai dari baris ke-5 (index 4)
+        # 2️⃣ Ekstrak data (baris ke-5 dst)
         df_data = df_raw.iloc[4:].reset_index(drop=True)
         df_data.columns = range(len(df_data.columns))
         
-        # Proses data dalam kelompok 4 baris
         processed_rows = []
-        
         i = 0
         while i < len(df_data):
-            # Ambil 4 baris untuk setiap satker
             if i + 3 >= len(df_data):
                 break
-                
-            nilai_row = df_data.iloc[i]
-            bobot_row = df_data.iloc[i+1]
-            nilai_akhir_row = df_data.iloc[i+2]
-            nilai_aspek_row = df_data.iloc[i+3]
             
-            # Ekstrak data dasar (kolom 0-5)
+            nilai_row = df_data.iloc[i]
+            bobot_row = df_data.iloc[i + 1]
+            nilai_akhir_row = df_data.iloc[i + 2]
+            nilai_aspek_row = df_data.iloc[i + 3]
+            
+            # Ekstrak kolom
             no = nilai_row[0]
             kode_kppn = str(nilai_row[1]).strip("'") if pd.notna(nilai_row[1]) else ""
             kode_ba = str(nilai_row[2]).strip("'") if pd.notna(nilai_row[2]) else ""
             kode_satker = str(nilai_row[3]).strip("'") if pd.notna(nilai_row[3]) else ""
             uraian_satker = nilai_row[4] if pd.notna(nilai_row[4]) else ""
             
-            # Ekstrak nilai aspek dari baris ke-4 (Nilai Aspek)
             aspek_perencanaan = nilai_aspek_row[6] if pd.notna(nilai_aspek_row[6]) else 0
             aspek_pelaksanaan = nilai_aspek_row[8] if pd.notna(nilai_aspek_row[8]) else 0
             aspek_hasil = nilai_aspek_row[12] if pd.notna(nilai_aspek_row[12]) else 0
             
-            # Ekstrak nilai komponen (kolom 6-12)
             revisi_dipa = nilai_row[6] if pd.notna(nilai_row[6]) else 0
             deviasi_hal3 = nilai_row[7] if pd.notna(nilai_row[7]) else 0
             penyerapan = nilai_row[8] if pd.notna(nilai_row[8]) else 0
@@ -102,88 +68,63 @@ def process_excel_file(uploaded_file, year):
             pengelolaan_up = nilai_row[11] if pd.notna(nilai_row[11]) else 0
             capaian_output = nilai_row[12] if pd.notna(nilai_row[12]) else 0
             
-            # Ekstrak summary (kolom 13-16)
             nilai_total = nilai_row[13] if pd.notna(nilai_row[13]) else 0
             konversi_bobot = nilai_row[14] if pd.notna(nilai_row[14]) else 0
             dispensasi_spm = nilai_row[15] if pd.notna(nilai_row[15]) else 0
             nilai_akhir = nilai_row[16] if pd.notna(nilai_row[16]) else 0
-            
-            # Simpan bobot dan nilai akhir terbobot untuk referensi
+
+            # Simpan bobot & nilai terbobot
             bobot_dict = {
-                'Revisi DIPA': bobot_row[6] if pd.notna(bobot_row[6]) else 0,
-                'Deviasi Halaman III DIPA': bobot_row[7] if pd.notna(bobot_row[7]) else 0,
-                'Penyerapan Anggaran': bobot_row[8] if pd.notna(bobot_row[8]) else 0,
-                'Belanja Kontraktual': bobot_row[9] if pd.notna(bobot_row[9]) else 0,
-                'Penyelesaian Tagihan': bobot_row[10] if pd.notna(bobot_row[10]) else 0,
-                'Pengelolaan UP dan TUP': bobot_row[11] if pd.notna(bobot_row[11]) else 0,
-                'Capaian Output': bobot_row[12] if pd.notna(bobot_row[12]) else 0
+                'Revisi DIPA': bobot_row[6], 'Deviasi Halaman III DIPA': bobot_row[7],
+                'Penyerapan Anggaran': bobot_row[8], 'Belanja Kontraktual': bobot_row[9],
+                'Penyelesaian Tagihan': bobot_row[10], 'Pengelolaan UP dan TUP': bobot_row[11],
+                'Capaian Output': bobot_row[12]
             }
-            
             nilai_terbobot_dict = {
-                'Revisi DIPA': nilai_akhir_row[6] if pd.notna(nilai_akhir_row[6]) else 0,
-                'Deviasi Halaman III DIPA': nilai_akhir_row[7] if pd.notna(nilai_akhir_row[7]) else 0,
-                'Penyerapan Anggaran': nilai_akhir_row[8] if pd.notna(nilai_akhir_row[8]) else 0,
-                'Belanja Kontraktual': nilai_akhir_row[9] if pd.notna(nilai_akhir_row[9]) else 0,
-                'Penyelesaian Tagihan': nilai_akhir_row[10] if pd.notna(nilai_akhir_row[10]) else 0,
-                'Pengelolaan UP dan TUP': nilai_akhir_row[11] if pd.notna(nilai_akhir_row[11]) else 0,
-                'Capaian Output': nilai_akhir_row[12] if pd.notna(nilai_akhir_row[12]) else 0
+                'Revisi DIPA': nilai_akhir_row[6], 'Deviasi Halaman III DIPA': nilai_akhir_row[7],
+                'Penyerapan Anggaran': nilai_akhir_row[8], 'Belanja Kontraktual': nilai_akhir_row[9],
+                'Penyelesaian Tagihan': nilai_akhir_row[10], 'Pengelolaan UP dan TUP': nilai_akhir_row[11],
+                'Capaian Output': nilai_akhir_row[12]
             }
-            
+
             row_data = {
-                'No': no,
-                'Kode KPPN': kode_kppn,
-                'Kode BA': kode_ba,
-                'Kode Satker': kode_satker,
+                'No': no, 'Kode KPPN': kode_kppn, 'Kode BA': kode_ba, 'Kode Satker': kode_satker,
                 'Uraian Satker': uraian_satker,
                 'Kualitas Perencanaan Anggaran': aspek_perencanaan,
                 'Kualitas Pelaksanaan Anggaran': aspek_pelaksanaan,
                 'Kualitas Hasil Pelaksanaan Anggaran': aspek_hasil,
-                'Revisi DIPA': revisi_dipa,
-                'Deviasi Halaman III DIPA': deviasi_hal3,
-                'Penyerapan Anggaran': penyerapan,
-                'Belanja Kontraktual': belanja_kontraktual,
-                'Penyelesaian Tagihan': penyelesaian_tagihan,
-                'Pengelolaan UP dan TUP': pengelolaan_up,
+                'Revisi DIPA': revisi_dipa, 'Deviasi Halaman III DIPA': deviasi_hal3,
+                'Penyerapan Anggaran': penyerapan, 'Belanja Kontraktual': belanja_kontraktual,
+                'Penyelesaian Tagihan': penyelesaian_tagihan, 'Pengelolaan UP dan TUP': pengelolaan_up,
                 'Capaian Output': capaian_output,
-                'Nilai Total': nilai_total,
-                'Konversi Bobot': konversi_bobot,
+                'Nilai Total': nilai_total, 'Konversi Bobot': konversi_bobot,
                 'Dispensasi SPM (Pengurang)': dispensasi_spm,
                 'Nilai Akhir (Nilai Total/Konversi Bobot)': nilai_akhir,
-                'Bulan': month,
-                'Tahun': year,
-                'Bobot': bobot_dict,
-                'Nilai Terbobot': nilai_terbobot_dict
+                'Bulan': month, 'Tahun': year,
+                'Bobot': bobot_dict, 'Nilai Terbobot': nilai_terbobot_dict
             }
-            
             processed_rows.append(row_data)
             i += 4
-        
+
         df_processed = pd.DataFrame(processed_rows)
-        
-        # Tambahkan peringkat
         df_processed = df_processed.sort_values('Nilai Akhir (Nilai Total/Konversi Bobot)', ascending=False)
         df_processed['Peringkat'] = range(1, len(df_processed) + 1)
-
-        # <-- NEW: Add Satker unique identifier column for display/labeling
         df_processed['Satker'] = df_processed['Uraian Satker'].astype(str) + ' (' + df_processed['Kode Satker'].astype(str) + ')'
+        df_processed['Source'] = 'Upload'
         
         return df_processed, month, year
-        
+
     except Exception as e:
         st.error(f"Error memproses file: {str(e)}")
         return None, None, None
 
 # Save any file (Excel/template) to your GitHub repo
 def save_file_to_github(file_bytes, filename, folder="data"):
-    """
-    Menyimpan file (Excel atau Template) ke repository GitHub.
-    Folder default: 'data'
-    """
     token = os.getenv("GITHUB_TOKEN") or st.secrets.get("GITHUB_TOKEN")
     repo_name = os.getenv("GITHUB_REPO") or st.secrets.get("GITHUB_REPO")
 
     if not token or not repo_name:
-        st.error("❌ GitHub credentials not found. Tambahkan GITHUB_TOKEN dan GITHUB_REPO di Streamlit Secrets.")
+        st.error("❌ GitHub credentials not found.")
         return
 
     g = Github(auth=Auth.Token(token))
@@ -193,23 +134,19 @@ def save_file_to_github(file_bytes, filename, folder="data"):
     try:
         contents = repo.get_contents(path)
         repo.update_file(contents.path, f"Update {filename}", file_bytes, contents.sha)
-        st.success(f"✅ File {filename} berhasil diperbarui di GitHub ({folder}/).")
+        st.success(f"✅ File {filename} diperbarui di GitHub.")
     except Exception:
         repo.create_file(path, f"Upload {filename}", file_bytes)
-        st.success(f"✅ File {filename} berhasil diunggah ke GitHub ({folder}/).")
+        st.success(f"✅ File {filename} diunggah ke GitHub.")
 
 
 # Load all uploaded data from GitHub (run on startup)
 def load_data_from_github():
-    """
-    Membaca semua file Excel di folder 'data' repository GitHub dan memuatnya ke session_state.
-    Menstandarkan struktur kolom agar konsisten dengan hasil process_excel_file().
-    """
     token = os.getenv("GITHUB_TOKEN") or st.secrets.get("GITHUB_TOKEN")
     repo_name = os.getenv("GITHUB_REPO") or st.secrets.get("GITHUB_REPO")
 
     if not token or not repo_name:
-        st.warning("GitHub credentials tidak ditemukan, lewati load data.")
+        st.warning("GitHub credentials tidak ditemukan.")
         return
 
     g = Github(auth=Auth.Token(token))
@@ -229,14 +166,12 @@ def load_data_from_github():
 
         decoded = base64.b64decode(file.content)
         df = pd.read_excel(io.BytesIO(decoded))
-
-        # Extract month-year from filename
         parts = file.name.replace("IKPA_", "").replace(".xlsx", "").split("_")
         if len(parts) != 2:
             continue
         month, year = parts
 
-        # --- 🔧 Standardize columns just like process_excel_file ---
+        # standardize columns
         if 'Uraian Satker' in df.columns and 'Kode Satker' in df.columns:
             df['Satker'] = df['Uraian Satker'].astype(str) + ' (' + df['Kode Satker'].astype(str) + ')'
         elif 'Kode Satker' in df.columns:
@@ -244,41 +179,28 @@ def load_data_from_github():
         else:
             df['Satker'] = df.index.astype(str)
 
-        # Ensure kode satker is string
-        if 'Kode Satker' in df.columns:
-            df['Kode Satker'] = df['Kode Satker'].astype(str)
-        else:
-            df['Kode Satker'] = df.index.astype(str)
-
-        # Ensure numeric columns are properly typed
         numeric_cols = [
-            'Nilai Akhir (Nilai Total/Konversi Bobot)',
-            'Nilai Total', 'Konversi Bobot',
+            'Nilai Akhir (Nilai Total/Konversi Bobot)', 'Nilai Total', 'Konversi Bobot',
             'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran',
-            'Belanja Kontraktual', 'Penyelesaian Tagihan', 'Pengelolaan UP dan TUP',
-            'Capaian Output'
+            'Belanja Kontraktual', 'Penyelesaian Tagihan', 'Pengelolaan UP dan TUP', 'Capaian Output'
         ]
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-        # Add sorting and label columns if missing
         df['Bulan'] = df.get('Bulan', month)
         df['Tahun'] = df.get('Tahun', year)
+        df['Source'] = 'GitHub'
         df['Period'] = f"{month} {year}"
         df['Period_Sort'] = f"{year}-{month}"
 
-        # Add ranking if missing
         if 'Peringkat' not in df.columns and 'Nilai Akhir (Nilai Total/Konversi Bobot)' in df.columns:
             df = df.sort_values('Nilai Akhir (Nilai Total/Konversi Bobot)', ascending=False)
             df['Peringkat'] = range(1, len(df) + 1)
 
-        # Save back into session state
-        # ensure month/year are strings for consistent keys across uploaded vs github-loaded files
         st.session_state.data_storage[(str(month), str(year))] = df
 
-    st.success(f"✅ {len(st.session_state.data_storage)} file IKPA berhasil dimuat dari GitHub.")
-
+    st.success(f"✅ {len(st.session_state.data_storage)} file berhasil dimuat dari GitHub.")
 
 # Path ke file template (akan diatur di session state)
 TEMPLATE_PATH = r"C:\Users\KEMENKEU\Desktop\INDIKATOR PELAKSANAAN ANGGARAN.xlsx"
@@ -774,15 +696,12 @@ def page_trend():
 # HALAMAN 3: ADMIN
 def page_admin():
     st.title("🔐 Halaman Administrasi")
-    
-    # Password protection
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
-    
+
     if not st.session_state.authenticated:
         st.warning("🔒 Halaman ini memerlukan autentikasi")
         password = st.text_input("Masukkan Password", type="password")
-        
         if st.button("Login"):
             if password == "109KPPN":
                 st.session_state.authenticated = True
@@ -791,101 +710,75 @@ def page_admin():
             else:
                 st.error("❌ Password salah!")
         return
-    
-    # Jika sudah login
+
     st.success("✅ Anda telah login sebagai Admin")
-    
     if st.button("🚪 Logout"):
         st.session_state.authenticated = False
         st.rerun()
-    
+
     st.markdown("---")
-    
-    # Tab untuk berbagai fungsi admin
     tab1, tab2, tab3, tab4 = st.tabs([
         "📤 Upload Data", 
         "🗑️ Hapus Data", 
         "📥 Download Data", 
         "📋 Download Template"
     ])
-    
+
     # TAB 1: UPLOAD DATA
     with tab1:
         st.subheader("📤 Upload Data Bulanan")
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-            upload_year = st.selectbox(
-                "Pilih Tahun",
-                options=list(range(2020, 2031)),
-                index=list(range(2020, 2031)).index(datetime.now().year)
-            )
-
-        with col2:
-            st.info("ℹ️ Bulan akan dideteksi otomatis dari file Excel")
-
-        uploaded_file = st.file_uploader(
-            "Pilih file Excel IKPA",
-            type=['xlsx', 'xls'],
-            help="Upload file Excel dengan format IKPA standar"
+        upload_year = st.selectbox(
+            "Pilih Tahun",
+            list(range(2020, 2031)),
+            index=list(range(2020, 2031)).index(datetime.now().year)
         )
 
-        if uploaded_file is not None:
-            st.info("📄 File berhasil dipilih. Klik tombol 'Proses Data' untuk melanjutkan.")
+        uploaded_file = st.file_uploader("Pilih file Excel IKPA", type=['xlsx', 'xls'])
 
+        if uploaded_file is not None:
             if st.button("🔄 Proses Data", type="primary"):
                 with st.spinner("Memproses data..."):
                     df_processed, month, year = process_excel_file(uploaded_file, upload_year)
 
-                    numeric_cols = [
-                        'Nilai Akhir (Nilai Total/Konversi Bobot)',
-                        'Nilai Total', 'Konversi Bobot',
-                        'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran',
-                        'Belanja Kontraktual', 'Penyelesaian Tagihan', 'Pengelolaan UP dan TUP',
-                        'Capaian Output'
-                    ]
-                    if df_processed is not None:
-                        for col in numeric_cols:
-                            if col in df_processed.columns:
-                                df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce').fillna(0)
+                    if df_processed is None:
+                        st.error("❌ Gagal memproses file. Pastikan format file sesuai template.")
+                        st.stop()
 
-                    if df_processed is not None:
-                        # Simpan ke session
-                        period_key = (str(month), str(year))     # <-- ensure string types
-                        # ensure Kode Satker string and numeric cols correct
+                    period_key = (str(month), str(year))
+                    filename = f"IKPA_{month}_{year}.xlsx"
+
+                    # ✅ Ask confirmation if data already exists
+                    if period_key in st.session_state.data_storage:
+                        st.warning(f"⚠️ Data untuk **{month} {year}** sudah ada di sistem dan GitHub.")
+                        confirm_replace = st.checkbox("Saya yakin ingin mengganti data yang sudah ada.", key=f"confirm_replace_{month}_{year}")
+
+                        if not confirm_replace:
+                            st.info("🕒 Unggahan dibatalkan sampai Anda mencentang konfirmasi.")
+                            st.stop()
+
+                    # ✅ Proceed upload
+                    try:
                         df_processed['Kode Satker'] = df_processed['Kode Satker'].astype(str)
-
                         st.session_state.data_storage[period_key] = df_processed
 
-                        # Simpan ke GitHub
-                        try:
-                            excel_bytes = io.BytesIO()
-                            with pd.ExcelWriter(excel_bytes, engine='openpyxl') as writer:
-                                # Drop kolom dict sebelum disimpan
-                                df_excel = df_processed.drop(['Bobot', 'Nilai Terbobot'], axis=1, errors='ignore')
-                                df_excel.to_excel(writer, index=False, sheet_name='Data IKPA')
-                            excel_bytes.seek(0)
+                        excel_bytes = io.BytesIO()
+                        with pd.ExcelWriter(excel_bytes, engine='openpyxl') as writer:
+                            df_excel = df_processed.drop(['Bobot', 'Nilai Terbobot'], axis=1, errors='ignore')
+                            df_excel.to_excel(writer, index=False, sheet_name='Data IKPA')
+                        excel_bytes.seek(0)
 
-                            save_file_to_github(excel_bytes.getvalue(), filename, folder="data")
+                        save_file_to_github(excel_bytes.getvalue(), filename, folder="data")
 
-                            st.success(f"✅ Data {month} {year} berhasil diunggah dan disimpan di GitHub!")
-                            st.balloons()
+                        # ✅ Professional success feedback
+                        st.toast(f"✅ Data {month} {year} berhasil diunggah & disimpan di GitHub.", icon="✅")
+                        st.success(f"✅ Data {month} {year} tersimpan dengan aman di sistem dan GitHub.")
+                        st.info("💾 Data berhasil diperbarui. Anda dapat melihatnya di halaman Dashboard Utama.")
+                        st.snow()  # more subtle and elegant than balloons
 
-                        except Exception as e:
-                            st.error(f"❌ Gagal menyimpan ke GitHub: {e}")
-
-                        # Preview hasil
-                        with st.expander("👁️ Preview Data"):
-                            st.dataframe(
-                                df_processed[['Peringkat', 'Kode Satker', 'Uraian Satker',
-                                              'Nilai Akhir (Nilai Total/Konversi Bobot)']].head(10),
-                                use_container_width=True
-                            )
-
-                    else:
-                        st.error("❌ Gagal memproses file. Pastikan format file sesuai dengan template.")
-    
+                    except Exception as e:
+                        st.error(f"❌ Gagal menyimpan ke GitHub: {e}")
+        
     # TAB 2: HAPUS DATA
     with tab2:
         st.subheader("🗑️ Hapus Data Bulanan")
@@ -901,31 +794,42 @@ def page_admin():
                 format_func=lambda x: f"{x[0]} {x[1]}"
             )
 
-            col1, col2 = st.columns(2)
+            month, year = period_to_delete
+            filename = f"data/IKPA_{month}_{year}.xlsx"
 
-            with col1:
-                st.warning(f"⚠️ Anda akan menghapus data: **{period_to_delete[0]} {period_to_delete[1]}**")
+            confirm_delete = st.checkbox(
+                f"⚠️ Saya yakin ingin menghapus data {month} {year} dari sistem dan GitHub.",
+                key=f"confirm_delete_{month}_{year}"
+            )
 
-            with col2:
-                if st.button("🗑️ Hapus Data", type="primary"):
-                    del st.session_state.data_storage[period_to_delete]
-                    st.success(f"✅ Data {period_to_delete[0]} {period_to_delete[1]} berhasil dihapus dari session.")
+            if st.button("🗑️ Hapus Data Ini", type="primary"):
+                if not confirm_delete:
+                    st.info("🕒 Penghapusan dibatalkan sampai Anda mencentang konfirmasi.")
+                    st.stop()
 
-                    # Hapus juga dari GitHub
-                    try:
-                        from github import Github
-                        token = st.secrets["GITHUB_TOKEN"]
-                        repo_name = st.secrets["GITHUB_REPO"]
-                        g = Github(auth=Auth.Token(token))
-                        repo = g.get_repo(repo_name)
-                        filename = f"data/IKPA_{period_to_delete[0]}_{period_to_delete[1]}.xlsx"
-                        file_content = repo.get_contents(filename)
-                        repo.delete_file(file_content.path, f"delete {filename}", file_content.sha)
-                        st.success("✅ File juga berhasil dihapus dari GitHub!")
-                    except Exception as e:
-                        st.warning(f"⚠️ Tidak dapat menghapus dari GitHub: {e}")
+                # 1️⃣ Hapus dari session_state
+                del st.session_state.data_storage[period_to_delete]
+                st.success(f"✅ Data {month} {year} berhasil dihapus dari session.")
 
-                    st.rerun()
+                # 2️⃣ Hapus juga dari GitHub
+                try:
+                    token = st.secrets["GITHUB_TOKEN"]
+                    repo_name = st.secrets["GITHUB_REPO"]
+                    g = Github(auth=Auth.Token(token))
+                    repo = g.get_repo(repo_name)
+
+                    contents = repo.get_contents(filename)
+                    repo.delete_file(contents.path, f"delete {filename}", contents.sha)
+
+                    st.toast(f"✅ File {filename} juga berhasil dihapus dari GitHub.", icon="🗑️")
+                    st.success(f"✅ File GitHub untuk {month} {year} berhasil dihapus.")
+                    st.snow()
+
+                except Exception as e:
+                    st.warning(f"⚠️ Tidak dapat menghapus dari GitHub (mungkin sudah dihapus): {e}")
+
+                st.info("🔁 Memuat ulang halaman untuk memperbarui tampilan data...")
+                st.rerun()
 
     # TAB 3: DOWNLOAD DATA
     with tab3:
@@ -1039,42 +943,66 @@ def page_admin():
         else:
             st.info("ℹ️ Belum ada data yang tersimpan.")
 
-# MAIN APP
+# ===============================
+# 🔹 MAIN APP
+# ===============================
 def main():
-    # 🔄 Load data dari GitHub jika belum ada data di session
-    if not st.session_state.data_storage:
+    # ✅ Load data dari GitHub jika session_state kosong (hanya sekali di awal)
+    if not st.session_state.get("data_storage"):
         with st.spinner("🔄 Memuat data dari GitHub..."):
-            load_data_from_github()
-
-    # Sidebar navigation
+            try:
+                load_data_from_github()
+            except Exception as e:
+                st.error(f"⚠️ Gagal memuat data dari GitHub: {e}")
+    
+    # ===============================
+    # 🔹 Sidebar Navigation
+    # ===============================
     st.sidebar.title("🧭 Navigasi")
     st.sidebar.markdown("---")
-    
+
     page = st.sidebar.radio(
         "Pilih Halaman",
         options=[
             "📊 Dashboard Utama",
             "📈 Tren Historis",
             "🔐 Admin"
-        ]
+        ],
+        index=0
     )
-    
+
     st.sidebar.markdown("---")
     st.sidebar.info("""
     **Dashboard IKPA**  
     Indikator Kinerja Pelaksanaan Anggaran  
     KPPN Baturaja
-    
+
     📧 Support: ameer.noor@kemenkeu.go.id
     """)
-    
-    # Routing
-    if page == "📊 Dashboard Utama":
-        page_dashboard()
-    elif page == "📈 Tren Historis":
-        page_trend()
-    elif page == "🔐 Admin":
-        page_admin()
 
+    # ===============================
+    # 🔹 Routing Halaman
+    # ===============================
+    if page == "📊 Dashboard Utama":
+        try:
+            page_dashboard()
+        except Exception as e:
+            st.error(f"❌ Terjadi kesalahan di Dashboard Utama: {e}")
+
+    elif page == "📈 Tren Historis":
+        try:
+            page_trend()
+        except Exception as e:
+            st.error(f"❌ Terjadi kesalahan di Dashboard Tren Historis: {e}")
+
+    elif page == "🔐 Admin":
+        try:
+            page_admin()
+        except Exception as e:
+            st.error(f"❌ Terjadi kesalahan di Halaman Admin: {e}")
+
+# ===============================
+# 🔹 ENTRY POINT
+# ===============================
 if __name__ == "__main__":
     main()
