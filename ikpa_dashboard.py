@@ -282,11 +282,9 @@ def create_ranking_chart(df, title, top=True, limit=10):
     
     return fig
 
-# Fungsi visualisasi untuk satker bermasalah
 def create_problem_chart(df, column, threshold, title, comparison='less'):
     """
-    Membuat visualisasi untuk satker dengan masalah
-    (Sekarang menggunakan kolom 'Satker' untuk label agar unik)
+    Membuat visualisasi untuk satker dengan masalah (vertikal bar chart)
     """
     if comparison == 'less':
         df_filtered = df[df[column] < threshold]
@@ -295,37 +293,47 @@ def create_problem_chart(df, column, threshold, title, comparison='less'):
     
     if len(df_filtered) == 0:
         return None
-    
+
+    # 🔹 Tentukan nilai minimum dan maksimum dari data
+    min_val = df_filtered[column].min()
+    max_val = df_filtered[column].max()
+
     fig = go.Figure()
-    
+
     fig.add_trace(go.Bar(
-        y=df_filtered['Satker'],
-        x=df_filtered[column],
-        orientation='h',
+        x=df_filtered['Satker'],   # 🔹 Satker di sumbu X
+        y=df_filtered[column],     # 🔹 Nilai di sumbu Y
         marker=dict(
             color=df_filtered[column],
-            colorscale='RdYlGn',
+            colorscale='OrRd_r',   # 🔸 gunakan skala warna OrRd_r (reverse)
             showscale=True,
-            cmin=0,
-            cmax=100
+            cmin=min_val,
+            cmax=max_val,
         ),
         text=df_filtered[column].round(2),
         textposition='outside',
-        hovertemplate='<b>%{y}</b><br>Nilai: %{x:.2f}<extra></extra>'
+        hovertemplate='<b>%{x}</b><br>Nilai: %{y:.2f}<extra></extra>'
     ))
-    
-    fig.add_vline(x=threshold, line_dash="dash", line_color="red", 
-                  annotation_text=f"Target: {threshold}")
-    
+
+    # 🔹 Garis batas target (horizontal line di Y-axis)
+    fig.add_hline(
+        y=threshold,
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"Target: {threshold}",
+        annotation_position="top right"
+    )
+
     fig.update_layout(
         title=f"⚠️ {title}",
-        xaxis_title="Nilai",
-        yaxis_title="",
-        height=max(400, len(df_filtered) * 40),
-        yaxis={'categoryorder': 'total ascending'},
-        showlegend=False
+        xaxis_title="Satker",
+        yaxis_title="Nilai",
+        xaxis_tickangle=90,  # 🔸 Rotasi label satker agar muat
+        height=500,
+        margin=dict(l=10, r=10, t=50, b=120),
+        showlegend=False,
     )
-    
+
     return fig
 
 # HALAMAN 1: DASHBOARD UTAMA
@@ -346,23 +354,28 @@ def page_dashboard():
     if not all_periods:
         st.warning("⚠️ Belum ada data yang tersedia.")
         return
-    
-    # Filter periode
-    col1, col2 = st.columns([3, 1])
-    with col1:
+
+    # Pembatas & Judul
+    st.markdown("---")
+    st.markdown("## 🎯 Highlights Kinerja Satker")
+
+    # ===============================
+    # 🎯 Periode & Ringkasan Metrik — Single Row Layout
+    # ===============================
+    col_period, col1, col2, col3, col4 = st.columns([1, 1, 1, 1, 1])
+
+    # 📅 Period selection (takes more width)
+    with col_period:
         selected_period = st.selectbox(
-            "📅 Pilih Periode",
+            "Pilih Periode",
             options=all_periods,
             index=0,
             format_func=lambda x: f"{x[0].capitalize()} {x[1]}"
         )
-    
+
     df = st.session_state.data_storage[selected_period]
-    
-    st.markdown("---")
-    
-    # Metrik ringkasan
-    col1, col2, col3, col4 = st.columns(4)
+
+    # 📊 Compact summary metrics
     with col1:
         st.metric("📋 Total Satker", len(df))
     with col2:
@@ -370,45 +383,126 @@ def page_dashboard():
         st.metric("📈 Rata-rata Nilai", f"{avg_score:.2f}")
     with col3:
         perfect_count = len(df[df['Nilai Akhir (Nilai Total/Konversi Bobot)'] == 100])
-        st.metric("⭐ Satker Nilai 100", perfect_count)
+        st.metric("⭐ Nilai 100", perfect_count)
     with col4:
-        below_80 = len(df[df['Nilai Akhir (Nilai Total/Konversi Bobot)'] < 80])
-        st.metric("⚠️ Satker < 80", below_80)
+        below_89 = len(df[df['Nilai Akhir (Nilai Total/Konversi Bobot)'] < 89])
+        st.metric("⚠️ Nilai < 89 (Belum Baik)", below_89)
     
-    st.markdown("---")
-    
-    # Top 10 dengan Belanja Kontraktual
-    st.subheader("🏆 Top 10 Satker dengan Belanja Kontraktual")
+    # ===============================
+    # 📊 Ranking Charts — Compact Horizontal Strip (4 in 1)
+    # ===============================
+
+    # 🎚️ User control for Y-axis range
+    st.markdown("###### Atur Skala Nilai (Sumbu Y)")
+
+    col_min, col_max = st.columns(2)
+    with col_min:
+        y_min = st.slider(
+            "Nilai Minimum (Y-Axis)",
+            min_value=0,
+            max_value=50,
+            value=50,  # Default to start from 50
+            step=1,
+        )
+    with col_max:
+        y_max = st.slider(
+            "Nilai Maksimum (Y-Axis)",
+            min_value=51,
+            max_value=120,
+            value=120,
+            step=1,
+        )
+
+    # ===============================
+    # Data preparation
+    # ===============================
     df_with_kontrak = df[df['Belanja Kontraktual'] != 0]
-    if len(df_with_kontrak) > 0:
-        fig1 = create_ranking_chart(df_with_kontrak, "Satker Terbaik (Dengan Belanja Kontraktual)", top=True, limit=10)
-        st.plotly_chart(fig1, use_container_width=True)
-    else:
-        st.info("Tidak ada satker dengan belanja kontraktual.")
-    
-    # Top 10 tanpa Belanja Kontraktual
-    st.subheader("🏆 Top 10 Satker tanpa Belanja Kontraktual")
     df_without_kontrak = df[df['Belanja Kontraktual'] == 0]
-    if len(df_without_kontrak) > 0:
-        fig2 = create_ranking_chart(df_without_kontrak, "Satker Terbaik (Tanpa Belanja Kontraktual)", top=True, limit=10)
-        st.plotly_chart(fig2, use_container_width=True)
-    else:
-        st.info("Tidak ada satker tanpa belanja kontraktual.")
-    
-    st.markdown("---")
-    
-    # Bottom 10 dengan Belanja Kontraktual
-    st.subheader("📉 Bottom 10 Satker dengan Belanja Kontraktual")
-    if len(df_with_kontrak) > 0:
-        fig3 = create_ranking_chart(df_with_kontrak, "Satker Perlu Perbaikan (Dengan Belanja Kontraktual)", top=False, limit=10)
-        st.plotly_chart(fig3, use_container_width=True)
-    
-    # Bottom 10 tanpa Belanja Kontraktual
-    st.subheader("📉 Bottom 10 Satker tanpa Belanja Kontraktual")
-    if len(df_without_kontrak) > 0:
-        fig4 = create_ranking_chart(df_without_kontrak, "Satker Perlu Perbaikan (Tanpa Belanja Kontraktual)", top=False, limit=10)
-        st.plotly_chart(fig4, use_container_width=True)
-    
+
+    # ===============================
+    # Chart creator helper
+    # ===============================
+    def make_column_chart(data, title, color_scale, y_min, y_max, limit=10, show_yaxis=False):
+        """Creates a compact vertical bar (column) chart with consistent style"""
+        fig = px.bar(
+            data.nlargest(limit, 'Nilai Akhir (Nilai Total/Konversi Bobot)'),
+            x='Satker',
+            y='Nilai Akhir (Nilai Total/Konversi Bobot)',
+            color='Nilai Akhir (Nilai Total/Konversi Bobot)',
+            color_continuous_scale=color_scale,
+            title=title,
+        )
+        fig.update_layout(
+            yaxis_range=[y_min, y_max],
+            xaxis_tickangle=90,  # 🔹 Rotate labels vertically
+            height=500,
+            margin=dict(l=10, r=10, t=40, b=80),
+            coloraxis_showscale=False,
+            showlegend=False,
+        )
+
+        # 🔹 Optional Y-axis display
+        if show_yaxis:
+            fig.update_yaxes(title_text="Nilai IKPA", showticklabels=True)
+        else:
+            fig.update_yaxes(title_text="", showticklabels=False)
+
+        # 🔹 Remove "Satker" label from X-axis
+        fig.update_xaxes(title_text="")
+
+        fig.update_traces(
+            texttemplate='%{y:.1f}',
+            textposition='outside',
+            hovertemplate='<b>%{x}</b><br>Nilai: %{y:.2f}<extra></extra>'
+        )
+
+        return fig
+
+    # ===============================
+    # 4 charts side by side (4x1 layout)
+    # ===============================
+    col1, col2, col3, col4 = st.columns(4)
+
+    # 1️⃣ Top 10 with kontraktual
+    with col1:
+        st.markdown("##### 🏆 10 Satker Terbaik (Dengan Kontraktual)")
+        if len(df_with_kontrak) > 0:
+            top_with = df_with_kontrak.nlargest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
+            fig1 = make_column_chart(top_with, "", "greens", y_min, y_max, show_yaxis=True)
+            st.plotly_chart(fig1, use_container_width=True)
+        else:
+            st.info("Tidak ada data.")
+
+    # 2️⃣ Top 10 without kontraktual
+    with col2:
+        st.markdown("##### 🏆 10 Satker Terbaik (Tanpa Kontraktual)")
+        if len(df_without_kontrak) > 0:
+            top_without = df_without_kontrak.nlargest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
+            fig2 = make_column_chart(top_without, "", "greens", y_min, y_max, show_yaxis=False)
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("Tidak ada data.")
+
+    # 3️⃣ Bottom 10 with kontraktual
+    with col3:
+        st.markdown("##### 📉 10 Satker Terendah (Dengan Kontraktual)")
+        if len(df_with_kontrak) > 0:
+            bottom_with = df_with_kontrak.nsmallest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
+            fig3 = make_column_chart(bottom_with, "", "orrd_r", y_min, y_max, show_yaxis=False)
+            st.plotly_chart(fig3, use_container_width=True)
+        else:
+            st.info("Tidak ada data.")
+
+    # 4️⃣ Bottom 10 without kontraktual
+    with col4:
+        st.markdown("##### 📉 10 Satker Terendah (Tanpa Kontraktual)")
+        if len(df_without_kontrak) > 0:
+            bottom_without = df_without_kontrak.nsmallest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
+            fig4 = make_column_chart(bottom_without, "", "orrd_r", y_min, y_max, show_yaxis=False)
+            st.plotly_chart(fig4, use_container_width=True)
+        else:
+            st.info("Tidak ada data.")
+
     st.markdown("---")
     
     # Satker dengan masalah
