@@ -118,7 +118,11 @@ def process_excel_file(uploaded_file, year):
         df_processed = pd.DataFrame(processed_rows)
         df_processed = df_processed.sort_values('Nilai Akhir (Nilai Total/Konversi Bobot)', ascending=False)
         df_processed['Peringkat'] = range(1, len(df_processed) + 1)
-        df_processed['Satker'] = df_processed['Uraian Satker'].astype(str) + ' (' + df_processed['Kode Satker'].astype(str) + ')'
+
+        # 🧩 Apply reference short names (if available)
+        df_processed = apply_reference_short_names(df_processed)
+
+        df_processed['Satker'] = df_processed['Uraian Satker Final'].astype(str) + ' (' + df_processed['Kode Satker'].astype(str) + ')'
         df_processed['Source'] = 'Upload'
         
         return df_processed, month, year
@@ -209,7 +213,8 @@ def load_data_from_github():
         if 'Peringkat' not in df.columns and 'Nilai Akhir (Nilai Total/Konversi Bobot)' in df.columns:
             df = df.sort_values('Nilai Akhir (Nilai Total/Konversi Bobot)', ascending=False)
             df['Peringkat'] = range(1, len(df) + 1)
-
+        
+        df = apply_reference_short_names(df)
         st.session_state.data_storage[(str(month), str(year))] = df
 
     st.success(f"✅ {len(st.session_state.data_storage)} file berhasil dimuat dari GitHub.")
@@ -335,6 +340,62 @@ def create_problem_chart(df, column, threshold, title, comparison='less'):
     )
 
     return fig
+
+# ===============================================
+# 🧩 Load Reference Data (Satker Short Names)
+# ===============================================
+def load_reference_data(uploaded_file=None):
+    """
+    Load Data Referensi Satker dan K/L ke session_state.reference_df
+    Kolom wajib: Kode BA, K/L, Kode Satker, Uraian Satker-SINGKAT, Uraian Satker-LENGKAP
+    """
+    try:
+        if uploaded_file:
+            df_ref = pd.read_excel(uploaded_file)
+        elif 'reference_df' in st.session_state:
+            return st.session_state.reference_df
+        else:
+            return None
+
+        df_ref.columns = [c.strip() for c in df_ref.columns]
+        required_cols = ['Kode BA', 'K/L', 'Kode Satker', 'Uraian Satker-SINGKAT', 'Uraian Satker-LENGKAP']
+        for col in required_cols:
+            if col not in df_ref.columns:
+                st.error(f"Kolom '{col}' tidak ditemukan di Data Referensi.")
+                return None
+
+        df_ref['Kode Satker'] = df_ref['Kode Satker'].astype(str)
+        st.session_state.reference_df = df_ref
+        st.success(f"✅ Data Referensi dimuat ({len(df_ref)} baris).")
+        return df_ref
+    except Exception as e:
+        st.error(f"❌ Gagal memuat Data Referensi: {e}")
+        return None
+
+# ===============================================
+# 🧩 Helper to apply reference short names
+# ===============================================
+def apply_reference_short_names(df):
+    if 'reference_df' not in st.session_state:
+        return df
+    ref = st.session_state.reference_df
+    try:
+        df = df.merge(ref[['Kode Satker', 'Uraian Satker-SINGKAT']], on='Kode Satker', how='left')
+        df['Uraian Satker Final'] = df['Uraian Satker-SINGKAT'].fillna(df['Uraian Satker'])
+        df['Satker'] = df['Uraian Satker Final'].astype(str) + ' (' + df['Kode Satker'].astype(str) + ')'
+        return df
+    except Exception as e:
+        st.warning(f"⚠️ Gagal menerapkan nama singkat: {e}")
+        return df
+
+# ===============================================
+# 🧩 Integration Hook Example (to be merged in main app)
+# ===============================================
+def integrate_reference_in_dashboard(df):
+    df = apply_reference_short_names(df)
+    return df
+
+
 
 # HALAMAN 1: DASHBOARD UTAMA
 def page_dashboard():
@@ -813,7 +874,9 @@ def page_trend():
     else:
         st.success("✅ Tidak ada satker dengan tren menurun pada periode yang dipilih!")
 
-# HALAMAN 3: ADMIN
+# ============================================================
+# 🔐 HALAMAN 3: ADMIN (Revised with integrated Reference Upload)
+# ============================================================
 def page_admin():
     st.title("🔐 Halaman Administrasi")
     if 'authenticated' not in st.session_state:
@@ -832,7 +895,8 @@ def page_admin():
         return
 
     st.success("✅ Anda telah login sebagai Admin")
-    # 🧩 Optional: Debug GitHub connection
+
+    # 🧩 Debug GitHub connection
     with st.expander("🧩 Debug GitHub Connection"):
         try:
             token = st.secrets["GITHUB_TOKEN"]
@@ -842,23 +906,25 @@ def page_admin():
             st.success(f"Terhubung ke GitHub repo: {repo.full_name}")
         except Exception as e:
             st.error(f"❌ Gagal terhubung ke GitHub: {e}")
-    
+
     if st.button("🚪 Logout"):
         st.session_state.authenticated = False
         st.rerun()
 
     st.markdown("---")
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📤 Upload Data", 
-        "🗑️ Hapus Data", 
-        "📥 Download Data", 
-        "📋 Download Template", 
+        "📤 Upload Data",
+        "🗑️ Hapus Data",
+        "📥 Download Data",
+        "📋 Download Template",
         "🕓 Riwayat Aktivitas"
     ])
 
-    # TAB 1: UPLOAD DATA
+    # ============================================================
+    # TAB 1: UPLOAD DATA (including Reference Upload)
+    # ============================================================
     with tab1:
-        st.subheader("📤 Upload Data Bulanan")
+        st.subheader("📤 Upload Data Bulanan IKPA")
 
         upload_year = st.selectbox(
             "Pilih Tahun",
@@ -869,45 +935,37 @@ def page_admin():
         uploaded_file = st.file_uploader("Pilih file Excel IKPA", type=['xlsx', 'xls'])
 
         if uploaded_file is not None:
-            # ✅ PRE-CHECK: Detect if file will replace existing data
-            # We need to peek at the file to get the month
             try:
                 df_temp = pd.read_excel(uploaded_file, header=None)
                 month_text = str(df_temp.iloc[1, 0])
                 month_preview = month_text.split(":")[-1].strip() if ":" in month_text else "UNKNOWN"
                 period_key_preview = (str(month_preview), str(upload_year))
-                
-                # Reset file pointer after preview
                 uploaded_file.seek(0)
-                
-                # ✅ Show warning and checkbox BEFORE the button
+
                 if period_key_preview in st.session_state.data_storage:
-                    st.warning(f"⚠️ Data untuk **{month_preview} {upload_year}** sudah ada di sistem dan GitHub.")
+                    st.warning(f"⚠️ Data untuk **{month_preview} {upload_year}** sudah ada.")
                     confirm_replace = st.checkbox(
-                        "✅ Saya yakin ingin mengganti data yang sudah ada.", 
+                        "✅ Ganti data yang sudah ada.",
                         key=f"confirm_replace_{month_preview}_{upload_year}"
                     )
                 else:
-                    confirm_replace = True  # No replacement needed
-                    st.info(f"📝 File baru akan diunggah untuk periode: **{month_preview} {upload_year}**")
-            
+                    confirm_replace = True
+                    st.info(f"📝 Akan mengunggah data baru untuk periode: **{month_preview} {upload_year}**")
+
             except Exception as e:
                 st.error(f"❌ Gagal membaca preview file: {e}")
                 confirm_replace = False
 
-            # ✅ Button only active if confirmed (or no replacement needed)
-            if st.button("🔄 Proses Data", type="primary", disabled=not confirm_replace):
+            if st.button("🔄 Proses Data IKPA", type="primary", disabled=not confirm_replace):
                 with st.spinner("Memproses data..."):
                     df_processed, month, year = process_excel_file(uploaded_file, upload_year)
-
                     if df_processed is None:
-                        st.error("❌ Gagal memproses file. Pastikan format file sesuai template.")
+                        st.error("❌ Gagal memproses file.")
                         st.stop()
 
                     period_key = (str(month), str(year))
                     filename = f"IKPA_{month}_{year}.xlsx"
 
-                    # ✅ Proceed upload (confirmation already done above)
                     try:
                         df_processed['Kode Satker'] = df_processed['Kode Satker'].astype(str)
                         st.session_state.data_storage[period_key] = df_processed
@@ -920,139 +978,132 @@ def page_admin():
 
                         save_file_to_github(excel_bytes.getvalue(), filename, folder="data")
 
-                        # ✅ Success feedback
-                        st.toast(f"✅ Data {month} {year} berhasil diunggah & disimpan di GitHub.", icon="✅")
-                        st.success(f"✅ Data {month} {year} tersimpan dengan aman di sistem dan GitHub.")
-                        st.info("💾 Data berhasil diperbarui. Anda dapat melihatnya di halaman Dashboard Utama.")
+                        st.success(f"✅ Data {month} {year} berhasil disimpan.")
                         st.snow()
 
                         st.session_state.activity_log.append({
                             "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "Aksi": "Upload/Replace" if period_key in st.session_state.data_storage else "Upload",
+                            "Aksi": "Upload",
                             "Periode": f"{month} {year}",
-                            "Status": "✅ Sukses disimpan ke GitHub"
+                            "Status": "✅ Sukses"
                         })
                     except Exception as e:
                         st.error(f"❌ Gagal menyimpan ke GitHub: {e}")
-        
+
+                    # 🧩 Save merged reference data to GitHub (templates folder)
+                    try:
+                        excel_bytes_ref = io.BytesIO()
+                        with pd.ExcelWriter(excel_bytes_ref, engine='openpyxl') as writer:
+                            st.session_state.reference_df.to_excel(writer, index=False, sheet_name='Data Referensi')
+                        excel_bytes_ref.seek(0)
+
+                        save_file_to_github(
+                            excel_bytes_ref.getvalue(),
+                            "Template_Data_Referensi.xlsx",
+                            folder="templates"
+                        )
+                        st.success("💾 Data Referensi berhasil disimpan ke GitHub (templates/Template_Data_Referensi.xlsx).")
+
+                    except Exception as e:
+                        st.error(f"❌ Gagal menyimpan Data Referensi ke GitHub: {e}")
+
+        st.markdown("---")
+        st.subheader("📚 Upload / Perbarui Data Referensi Satker & K/L")
+        st.info("""
+        - File referensi ini berisi kolom: **Kode BA, K/L, Kode Satker, Uraian Satker-SINGKAT, Uraian Satker-LENGKAP**  
+        - Saat diupload, sistem akan **menggabungkan** dengan data lama:  
+          🔹 Jika `Kode Satker` sudah ada → baris lama akan **diganti**  
+          🔹 Jika `Kode Satker` belum ada → akan **ditambahkan baru**
+        """)
+
+        uploaded_ref = st.file_uploader(
+            "📤 Pilih File Data Referensi Satker & K/L",
+            type=['xlsx', 'xls'],
+            key="ref_upload"
+        )
+
+        if uploaded_ref is not None:
+            try:
+                new_ref = pd.read_excel(uploaded_ref)
+                new_ref.columns = [c.strip() for c in new_ref.columns]
+
+                required = ['Kode BA', 'K/L', 'Kode Satker', 'Uraian Satker-SINGKAT', 'Uraian Satker-LENGKAP']
+                if not all(col in new_ref.columns for col in required):
+                    st.error("❌ Kolom wajib tidak lengkap dalam file referensi.")
+                    st.stop()
+
+                new_ref['Kode Satker'] = new_ref['Kode Satker'].astype(str)
+
+                if 'reference_df' in st.session_state:
+                    old_ref = st.session_state.reference_df.copy()
+                    merged = pd.concat([old_ref, new_ref]).drop_duplicates(subset=['Kode Satker'], keep='last')
+                    st.session_state.reference_df = merged
+                    st.success(f"✅ Data Referensi diperbarui ({len(merged)} total baris).")
+                else:
+                    st.session_state.reference_df = new_ref
+                    st.success(f"✅ Data Referensi baru dimuat ({len(new_ref)} baris).")
+
+                st.dataframe(st.session_state.reference_df.tail(10), use_container_width=True)
+
+            except Exception as e:
+                st.error(f"❌ Gagal memuat Data Referensi: {e}")
+
+    # ============================================================
     # TAB 2: HAPUS DATA
+    # ============================================================
     with tab2:
         st.subheader("🗑️ Hapus Data Bulanan")
-
         if not st.session_state.data_storage:
-            st.info("ℹ️ Belum ada data yang tersimpan.")
+            st.info("ℹ️ Belum ada data tersimpan.")
         else:
             available_periods = sorted(st.session_state.data_storage.keys(), reverse=True)
-
             period_to_delete = st.selectbox(
                 "Pilih periode yang akan dihapus",
                 options=available_periods,
                 format_func=lambda x: f"{x[0].capitalize()} {x[1]}"
             )
-
             month, year = period_to_delete
             filename = f"data/IKPA_{month}_{year}.xlsx"
 
             confirm_delete = st.checkbox(
-                f"⚠️ Saya yakin ingin menghapus data {month} {year} dari sistem dan GitHub.",
+                f"⚠️ Hapus data {month} {year} dari sistem dan GitHub.",
                 key=f"confirm_delete_{month}_{year}"
             )
 
-            if st.button("🗑️ Hapus Data Ini", type="primary"):
-                if not confirm_delete:
-                    st.info("🕒 Penghapusan dibatalkan sampai Anda mencentang konfirmasi.")
-                    st.stop()
-
-                # 1️⃣ Hapus dari session_state
-                del st.session_state.data_storage[period_to_delete]
-                st.success(f"✅ Data {month} {year} berhasil dihapus dari session.")
-
-                # 2️⃣ Hapus juga dari GitHub
+            if st.button("🗑️ Hapus Data Ini", type="primary") and confirm_delete:
                 try:
+                    del st.session_state.data_storage[period_to_delete]
                     token = st.secrets.get("GITHUB_TOKEN")
                     repo_name = st.secrets.get("GITHUB_REPO")
-
-                    if not token or not repo_name:
-                        raise ValueError("GitHub credentials tidak ditemukan di secrets.")
-
                     g = Github(auth=Auth.Token(token))
                     repo = g.get_repo(repo_name)
-                    full_path = f"data/IKPA_{month}_{year}.xlsx"
-
-                    contents = repo.get_contents(full_path)
-
-                    # Handle both file and list-of-files cases
-                    if isinstance(contents, list):
-                        target = next((c for c in contents if c.path == full_path), None)
-                        if not target:
-                            raise FileNotFoundError(f"File {full_path} tidak ditemukan di GitHub.")
-                        contents = target
-
-                    repo.delete_file(
-                        contents.path,
-                        message=f"🗑️ delete {full_path}",
-                        sha=contents.sha
-                    )
-
-                    st.toast(f"🗑️ File {full_path} berhasil dihapus dari GitHub.", icon="✅")
-                    st.success(f"✅ File {month} {year} dihapus dari GitHub dan lokal.")
+                    contents = repo.get_contents(f"data/IKPA_{month}_{year}.xlsx")
+                    repo.delete_file(contents.path, f"Delete {filename}", contents.sha)
+                    st.success(f"✅ Data {month} {year} dihapus dari sistem & GitHub.")
                     st.snow()
-                    st.session_state.activity_log.append({
-                        "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Aksi": "Hapus",
-                        "Periode": f"{month} {year}",
-                        "Status": "🗑️ Dihapus dari GitHub dan lokal"
-                    })
-                    st.info("🔁 Memuat ulang halaman untuk memperbarui tampilan data...")
-                    st.rerun()                    
-
                 except Exception as e:
-                    st.error(f"❌ Gagal menghapus file dari GitHub untuk {month} {year}.")
-                    with st.expander("⚠️ Rincian Error Penghapusan"):
-                        st.exception(e)
+                    st.error(f"❌ Gagal menghapus data: {e}")
 
-                    st.session_state.activity_log.append({
-                        "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Aksi": "Hapus",
-                        "Periode": f"{month} {year}",
-                        "Status": f"⚠️ Gagal menghapus: {e}"
-                    })
-                    st.stop()  # ❌ Stop instead of rerun, so error stays visible
-
+    # ============================================================
     # TAB 3: DOWNLOAD DATA
+    # ============================================================
     with tab3:
-        st.subheader("📥 Download Data Bersih")
-
+        st.subheader("📥 Download Data IKPA")
         if not st.session_state.data_storage:
-            st.info("ℹ️ Belum ada data yang tersimpan.")
+            st.info("ℹ️ Belum ada data.")
         else:
             available_periods = sorted(st.session_state.data_storage.keys(), reverse=True)
-
             period_to_download = st.selectbox(
-                "Pilih periode yang akan didownload",
+                "Pilih periode untuk download",
                 options=available_periods,
                 format_func=lambda x: f"{x[0].capitalize()} {x[1]}"
             )
-
             df_download = st.session_state.data_storage[period_to_download]
-
-            # Preview
-            with st.expander("👁️ Preview Data"):
-                st.dataframe(df_download.head(10), use_container_width=True)
-
-            # Prepare download
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # Drop only if present; ignore if not present
                 df_excel = df_download.drop(['Bobot', 'Nilai Terbobot'], axis=1, errors='ignore')
-                # If df_excel is empty, create a minimal sheet to avoid openpyxl "no visible sheet" error
-                if df_excel.shape[0] == 0 or df_excel.shape[1] == 0:
-                    # create a minimal DataFrame with a placeholder column
-                    df_excel = pd.DataFrame({'No data': []})
                 df_excel.to_excel(writer, index=False, sheet_name='Data IKPA')
-
             output.seek(0)
-
             st.download_button(
                 label="📥 Download Excel",
                 data=output,
@@ -1060,21 +1111,12 @@ def page_admin():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-    # TAB 4: DOWNLOAD TEMPLATE
+    # ============================================================
+    # TAB 4: DOWNLOAD TEMPLATE (including Reference Template)
+    # ============================================================
     with tab4:
-        st.subheader("📋 Download Template Excel")
-
-        st.info("""
-        📝 **Panduan Penggunaan Template:**
-        1. Template ini adalah contoh format Excel yang harus diikuti.
-        2. Baris 1: Judul "INDIKATOR PELAKSANAAN ANGGARAN"
-        3. Baris 2: "Sampai Dengan : [NAMA BULAN]"
-        4. Baris 3-4: Header kolom (sudah terformat)
-        5. Baris 5 dst: Data satker (4 baris per satker)
-        ⚠️ Pastikan format angka konsisten (gunakan titik untuk desimal)
-        """)
-
-        # Ambil template dari GitHub (folder templates/)
+        st.subheader("📋 Download Template")
+        st.markdown("### 📘 Template IKPA")
         try:
             token = st.secrets["GITHUB_TOKEN"]
             repo_name = st.secrets["GITHUB_REPO"]
@@ -1087,78 +1129,64 @@ def page_admin():
 
         if template_data:
             st.download_button(
-                label="📥 Download Template Excel (dari GitHub atau lokal)",
+                label="📥 Download Template IKPA",
                 data=template_data,
                 file_name="Template_IKPA.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
+        st.markdown("---")
+        st.markdown("### 📗 Template Data Referensi Satker & K/L")
+
+        # 🧩 Use latest reference data for template content
+        if 'reference_df' in st.session_state and not st.session_state.reference_df.empty:
+            template_ref = st.session_state.reference_df.copy()
         else:
-            st.warning("⚠️ Template belum ditemukan di GitHub maupun lokal.")
-
-        st.markdown("---")
-        st.subheader("📤 Upload Template Baru")
-        st.info("Jika Anda ingin memperbarui template di GitHub, upload di sini:")
-
-        template_upload = st.file_uploader(
-            "Upload file template IKPA",
-            type=['xlsx', 'xls'],
-            key="template_uploader"
-        )
-
-        if template_upload:
+            # fallback: try load from GitHub
             try:
-                save_file_to_github(template_upload.read(), "Template_IKPA.xlsx", folder="templates")
-                st.success("✅ Template berhasil di-upload dan disimpan di GitHub!")
-            except Exception as e:
-                st.error(f"❌ Gagal upload template ke GitHub: {e}")
-
-        st.markdown("---")
-        st.subheader("📊 Informasi Data Tersimpan")
-
-        if st.session_state.data_storage:
-            summary_data = []
-            for period, df in sorted(st.session_state.data_storage.items(), reverse=True):
-                summary_data.append({
-                    'Bulan': period[0],
-                    'Tahun': period[1],
-                    'Jumlah Satker': len(df),
-                    'Rata-rata Nilai Akhir': df['Nilai Akhir (Nilai Total/Konversi Bobot)'].mean()
+                token = st.secrets["GITHUB_TOKEN"]
+                repo_name = st.secrets["GITHUB_REPO"]
+                g = Github(auth=Auth.Token(token))
+                repo = g.get_repo(repo_name)
+                ref_content = repo.get_contents("templates/Template_Data_Referensi.xlsx")
+                ref_data = base64.b64decode(ref_content.content)
+                template_ref = pd.read_excel(io.BytesIO(ref_data))
+            except Exception:
+                template_ref = pd.DataFrame({
+                    'No': [],
+                    'Kode BA': [],
+                    'K/L': [],
+                    'Kode Satker': [],
+                    'Uraian Satker-SINGKAT': [],
+                    'Uraian Satker-LENGKAP': []
                 })
 
-            df_summary = pd.DataFrame(summary_data)
-            st.dataframe(df_summary.style.format({'Rata-rata Nilai Akhir': '{:.2f}'}), use_container_width=True)
-        else:
-            st.info("ℹ️ Belum ada data yang tersimpan.")
+        output_ref = io.BytesIO()
+        with pd.ExcelWriter(output_ref, engine='openpyxl') as writer:
+            template_ref.to_excel(writer, index=False, sheet_name='Data Referensi')
+        output_ref.seek(0)
 
-    # TAB 5: RIWAYAT AKTIVITAS
+        st.download_button(
+            label="📥 Download Template Data Referensi",
+            data=output_ref,
+            file_name="Template_Data_Referensi.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    # ============================================================
+    # TAB 5: LOG AKTIVITAS
+    # ============================================================
     with tab5:
-        st.subheader("📖 Log Aktivitas GitHub (Upload / Delete)")
-        st.info("Log ini merekam setiap unggahan, penggantian, dan penghapusan data ke/dari GitHub.")
-
+        st.subheader("📖 Log Aktivitas GitHub")
         if not st.session_state.activity_log:
-            st.warning("Belum ada aktivitas tercatat.")
+            st.info("Belum ada aktivitas.")
         else:
             df_log = pd.DataFrame(st.session_state.activity_log)
-            df_log = df_log[::-1].reset_index(drop=True)  # show latest first
-            st.dataframe(
-                df_log.style.format(na_rep="-"),
-                use_container_width=True,
-                height=400
-            )
+            st.dataframe(df_log[::-1].reset_index(drop=True), use_container_width=True)
+            if st.button("🧹 Bersihkan Log"):
+                st.session_state.activity_log = []
+                st.success("🧹 Log dibersihkan.")
 
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                if st.button("🧹 Bersihkan Log"):
-                    st.session_state.activity_log = []
-                    st.success("🧹 Log aktivitas telah dibersihkan.")
-                    st.rerun()
-            with col2:
-                st.download_button(
-                    label="📥 Unduh Log Aktivitas (Excel)",
-                    data=df_log.to_csv(index=False).encode('utf-8'),
-                    file_name="Log_Aktivitas_GitHub.csv",
-                    mime="text/csv"
-                )
 
 # ===============================
 # 🔹 MAIN APP
@@ -1171,7 +1199,26 @@ def main():
                 load_data_from_github()
             except Exception as e:
                 st.error(f"⚠️ Gagal memuat data dari GitHub: {e}")
-    
+
+    # ============================================================
+    # 🧩 Auto-load Reference Data from GitHub
+    # ============================================================
+    if 'reference_df' not in st.session_state:
+        try:
+            token = st.secrets["GITHUB_TOKEN"]
+            repo_name = st.secrets["GITHUB_REPO"]
+            g = Github(auth=Auth.Token(token))
+            repo = g.get_repo(repo_name)
+            ref_path = "templates/Template_Data_Referensi.xlsx"
+            ref_file = repo.get_contents(ref_path)
+            ref_data = base64.b64decode(ref_file.content)
+            ref_df = pd.read_excel(io.BytesIO(ref_data))
+            ref_df['Kode Satker'] = ref_df['Kode Satker'].astype(str)
+            st.session_state.reference_df = ref_df
+            st.info(f"📚 Data Referensi dimuat otomatis ({len(ref_df)} baris).")
+        except Exception as e:
+            st.warning(f"⚠️ Tidak dapat memuat Data Referensi dari GitHub: {e}")
+
     # ===============================
     # 🔹 Sidebar Navigation
     # ===============================
