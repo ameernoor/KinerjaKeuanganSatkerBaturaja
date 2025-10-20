@@ -121,7 +121,6 @@ def process_excel_file(uploaded_file, year):
 
         # 🧩 Apply reference short names (if available)
         df_processed = apply_reference_short_names(df_processed)
-
         df_processed['Satker'] = df_processed['Uraian Satker Final'].astype(str) + ' (' + df_processed['Kode Satker'].astype(str) + ')'
         df_processed['Source'] = 'Upload'
         
@@ -373,21 +372,27 @@ def load_reference_data(uploaded_file=None):
         return None
 
 # ===============================================
-# 🧩 Helper to apply reference short names
+# 🧩 Helper to apply reference short names (fixed)
 # ===============================================
 def apply_reference_short_names(df):
-    if 'reference_df' not in st.session_state:
+    if 'reference_df' not in st.session_state or st.session_state.reference_df is None:
         return df
-    ref = st.session_state.reference_df
+
+    ref = st.session_state.reference_df.copy()
+
+    # 🩹 Ensure same dtype before merging
+    df['Kode Satker'] = df['Kode Satker'].astype(str).str.strip()
+    ref['Kode Satker'] = ref['Kode Satker'].astype(str).str.strip()
+
     try:
         df = df.merge(ref[['Kode Satker', 'Uraian Satker-SINGKAT']], on='Kode Satker', how='left')
-        df['Uraian Satker Final'] = df['Uraian Satker-SINGKAT'].fillna(df['Uraian Satker'])
+        df['Uraian Satker Final'] = df['Uraian Satker-SINGKAT'].fillna(df.get('Uraian Satker', ''))
         df['Satker'] = df['Uraian Satker Final'].astype(str) + ' (' + df['Kode Satker'].astype(str) + ')'
         return df
     except Exception as e:
         st.warning(f"⚠️ Gagal menerapkan nama singkat: {e}")
         return df
-
+        
 # ===============================================
 # 🧩 Integration Hook Example (to be merged in main app)
 # ===============================================
@@ -1034,6 +1039,7 @@ def page_admin():
 
                 new_ref['Kode Satker'] = new_ref['Kode Satker'].astype(str)
 
+                # Gabungkan atau buat baru
                 if 'reference_df' in st.session_state:
                     old_ref = st.session_state.reference_df.copy()
                     merged = pd.concat([old_ref, new_ref]).drop_duplicates(subset=['Kode Satker'], keep='last')
@@ -1045,8 +1051,25 @@ def page_admin():
 
                 st.dataframe(st.session_state.reference_df.tail(10), use_container_width=True)
 
+                # 🧩 Save merged reference data permanently to GitHub
+                try:
+                    excel_bytes_ref = io.BytesIO()
+                    with pd.ExcelWriter(excel_bytes_ref, engine='openpyxl') as writer:
+                        st.session_state.reference_df.to_excel(writer, index=False, sheet_name='Data Referensi')
+                    excel_bytes_ref.seek(0)
+
+                    save_file_to_github(
+                        excel_bytes_ref.getvalue(),
+                        "Template_Data_Referensi.xlsx",
+                        folder="templates"
+                    )
+                    st.success("💾 Data Referensi berhasil disimpan ke GitHub (templates/Template_Data_Referensi.xlsx).")
+                except Exception as e:
+                    st.error(f"❌ Gagal menyimpan Data Referensi ke GitHub: {e}")
+
             except Exception as e:
-                st.error(f"❌ Gagal memuat Data Referensi: {e}")
+                st.error(f"❌ Gagal memproses Data Referensi: {e}")
+
 
     # ============================================================
     # TAB 2: HAPUS DATA
@@ -1215,7 +1238,14 @@ def main():
             ref_df = pd.read_excel(io.BytesIO(ref_data))
             ref_df['Kode Satker'] = ref_df['Kode Satker'].astype(str)
             st.session_state.reference_df = ref_df
+
+            # 🧩 Reapply short names to all loaded data (ensure consistency)
+            if 'reference_df' in st.session_state and st.session_state.reference_df is not None:
+                for key, df in st.session_state.data_storage.items():
+                    st.session_state.data_storage[key] = apply_reference_short_names(df)
+
             st.info(f"📚 Data Referensi dimuat otomatis ({len(ref_df)} baris).")
+
         except Exception as e:
             st.warning(f"⚠️ Tidak dapat memuat Data Referensi dari GitHub: {e}")
 
