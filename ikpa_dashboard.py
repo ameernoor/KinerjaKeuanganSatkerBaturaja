@@ -10,13 +10,15 @@ import os
 import base64
 from github import Github
 from github import Auth
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+
 
 # define month order map
 MONTH_ORDER = {
-    "JANUARI": 1, "FEBRUARI": 2, "MARET": 3, "APRIL": 4, "MEI": 5, "JUNI": 6,
-    "JULI": 7, "AGUSTUS": 8, "SEPTEMBER": 9, "OKTOBER": 10, "NOVEMBER": 11, "DESEMBER": 12
+    "JANUARI": 1, "FEBRUARI": 2, "PEBRUARI": 2, "MARET": 3, "APRIL": 4, "MEI": 5, "JUNI": 6,
+    "JULI": 7, "AGUSTUS": 8, "SEPTEMBER": 9, "OKTOBER": 10, 
+    "NOVEMBER": 11, "NOPEMBER": 11, "DESEMBER": 12
 }
-
 # Konfigurasi halaman
 st.set_page_config(
     page_title="Dashboard IKPA KPPN Baturaja",
@@ -119,11 +121,11 @@ def process_excel_file(uploaded_file, year):
         df_processed = df_processed.sort_values('Nilai Akhir (Nilai Total/Konversi Bobot)', ascending=False)
         df_processed['Peringkat'] = range(1, len(df_processed) + 1)
 
-        # 🧩 Apply reference short names (if available)
+        # Apply reference short names (if available)
         df_processed = apply_reference_short_names(df_processed)
-        df_processed['Satker'] = df_processed['Uraian Satker Final'].astype(str) + ' (' + df_processed['Kode Satker'].astype(str) + ')'
+        df_processed = create_satker_column(df_processed)  # Use helper function
         df_processed['Source'] = 'Upload'
-        
+
         return df_processed, month, year
 
     except Exception as e:
@@ -185,13 +187,10 @@ def load_data_from_github():
             continue
         month, year = parts
 
-        # standardize columns
-        if 'Uraian Satker' in df.columns and 'Kode Satker' in df.columns:
-            df['Satker'] = df['Uraian Satker'].astype(str) + ' (' + df['Kode Satker'].astype(str) + ')'
-        elif 'Kode Satker' in df.columns:
-            df['Satker'] = df['Kode Satker'].astype(str)
-        else:
-            df['Satker'] = df.index.astype(str)
+        # Apply reference short names first
+        df = apply_reference_short_names(df)
+        # Then create Satker column consistently
+        df = create_satker_column(df)
 
         numeric_cols = [
             'Nilai Akhir (Nilai Total/Konversi Bobot)', 'Nilai Total', 'Konversi Bobot',
@@ -213,7 +212,6 @@ def load_data_from_github():
             df = df.sort_values('Nilai Akhir (Nilai Total/Konversi Bobot)', ascending=False)
             df['Peringkat'] = range(1, len(df) + 1)
         
-        df = apply_reference_short_names(df)
         st.session_state.data_storage[(str(month), str(year))] = df
 
     st.success(f"✅ {len(st.session_state.data_storage)} file berhasil dimuat dari GitHub.")
@@ -286,30 +284,50 @@ def create_ranking_chart(df, title, top=True, limit=10):
     
     return fig
 
-def create_problem_chart(df, column, threshold, title, comparison='less'):
+# ============================================================
+# 🧩 Improved Problem Chart (with sorting, sliders, and filters)
+# ============================================================
+def create_problem_chart(df, column, threshold, title, comparison='less', y_min=None, y_max=None, show_yaxis=True):
     """
-    Membuat visualisasi untuk satker dengan masalah (vertikal bar chart)
+    Membuat visualisasi vertikal untuk satker dengan masalah.
+    - Menampilkan satker secara urut berdasarkan nilai (ascending)
+    - Menghapus nilai 0 khusus untuk kolom Pengelolaan UP dan TUP
+    - Tidak menampilkan label X-axis
+    - Opsi pengaturan rentang Y-axis dari slider
     """
     if comparison == 'less':
         df_filtered = df[df[column] < threshold]
     else:
         df_filtered = df[df[column] > threshold]
-    
+
+    # 🧹 Khusus Pengelolaan UP dan TUP: abaikan nilai 0
+    if "UP" in column.upper() and "TUP" in column.upper():
+        df_filtered = df_filtered[df_filtered[column] != 0]
+
     if len(df_filtered) == 0:
         return None
 
-    # 🔹 Tentukan nilai minimum dan maksimum dari data
+    # 🧮 Urutkan berdasarkan nilai
+    df_filtered = df_filtered.sort_values(by=column, ascending=False)
+
+    # Nilai min/max data
     min_val = df_filtered[column].min()
     max_val = df_filtered[column].max()
+
+    # 🧩 Gunakan nilai dari slider jika ada
+    if y_min is None:
+        y_min = max(0, int(min_val) - 5)
+    if y_max is None:
+        y_max = min(110, int(max_val) + 5)
 
     fig = go.Figure()
 
     fig.add_trace(go.Bar(
-        x=df_filtered['Satker'],   # 🔹 Satker di sumbu X
-        y=df_filtered[column],     # 🔹 Nilai di sumbu Y
+        x=df_filtered['Satker'],
+        y=df_filtered[column],
         marker=dict(
             color=df_filtered[column],
-            colorscale='OrRd_r',   # 🔸 gunakan skala warna OrRd_r (reverse)
+            colorscale='OrRd_r',
             showscale=True,
             cmin=min_val,
             cmax=max_val,
@@ -319,7 +337,7 @@ def create_problem_chart(df, column, threshold, title, comparison='less'):
         hovertemplate='<b>%{x}</b><br>Nilai: %{y:.2f}<extra></extra>'
     ))
 
-    # 🔹 Garis batas target (horizontal line di Y-axis)
+    # 🔹 Garis target threshold
     fig.add_hline(
         y=threshold,
         line_dash="dash",
@@ -328,54 +346,38 @@ def create_problem_chart(df, column, threshold, title, comparison='less'):
         annotation_position="top right"
     )
 
+    # Layout
     fig.update_layout(
         title=f"⚠️ {title}",
-        xaxis_title="Satker",
-        yaxis_title="Nilai",
-        xaxis_tickangle=90,  # 🔸 Rotasi label satker agar muat
+        xaxis_title="",  # 🚫 Hapus label X-axis
+        yaxis_title="Nilai" if show_yaxis else "",
+        yaxis_range=[y_min, y_max],
+        xaxis_tickangle=90,
         height=500,
         margin=dict(l=10, r=10, t=50, b=120),
         showlegend=False,
     )
 
+    if not show_yaxis:
+        fig.update_yaxes(showticklabels=False)
+
     return fig
 
 # ===============================================
-# 🧩 Load Reference Data (Satker Short Names)
-# ===============================================
-def load_reference_data(uploaded_file=None):
-    """
-    Load Data Referensi Satker dan K/L ke session_state.reference_df
-    Kolom wajib: Kode BA, K/L, Kode Satker, Uraian Satker-SINGKAT, Uraian Satker-LENGKAP
-    """
-    try:
-        if uploaded_file:
-            df_ref = pd.read_excel(uploaded_file)
-        elif 'reference_df' in st.session_state:
-            return st.session_state.reference_df
-        else:
-            return None
-
-        df_ref.columns = [c.strip() for c in df_ref.columns]
-        required_cols = ['Kode BA', 'K/L', 'Kode Satker', 'Uraian Satker-SINGKAT', 'Uraian Satker-LENGKAP']
-        for col in required_cols:
-            if col not in df_ref.columns:
-                st.error(f"Kolom '{col}' tidak ditemukan di Data Referensi.")
-                return None
-
-        df_ref['Kode Satker'] = df_ref['Kode Satker'].astype(str)
-        st.session_state.reference_df = df_ref
-        st.success(f"✅ Data Referensi dimuat ({len(df_ref)} baris).")
-        return df_ref
-    except Exception as e:
-        st.error(f"❌ Gagal memuat Data Referensi: {e}")
-        return None
-
-# ===============================================
-# 🧩 Helper to apply reference short names (fixed)
+# 🧩 Helper to apply reference short names (Fixed)
 # ===============================================
 def apply_reference_short_names(df):
+    """
+    Apply reference short names to dataframe with advanced error tracking.
+    If errors found, triggers Excel download with error details.
+    
+    This function only adds 'Uraian Satker-SINGKAT' and 'Uraian Satker Final' columns.
+    The 'Satker' column should be created by the caller for consistency.
+    """
     if 'reference_df' not in st.session_state or st.session_state.reference_df is None:
+        # If no reference data, create 'Uraian Satker Final' from existing 'Uraian Satker'
+        if 'Uraian Satker Final' not in df.columns:
+            df['Uraian Satker Final'] = df.get('Uraian Satker', '')
         return df
 
     ref = st.session_state.reference_df.copy()
@@ -385,21 +387,119 @@ def apply_reference_short_names(df):
     ref['Kode Satker'] = ref['Kode Satker'].astype(str).str.strip()
 
     try:
-        df = df.merge(ref[['Kode Satker', 'Uraian Satker-SINGKAT']], on='Kode Satker', how='left')
-        df['Uraian Satker Final'] = df['Uraian Satker-SINGKAT'].fillna(df.get('Uraian Satker', ''))
-        df['Satker'] = df['Uraian Satker Final'].astype(str) + ' (' + df['Kode Satker'].astype(str) + ')'
-        return df
-    except Exception as e:
-        st.warning(f"⚠️ Gagal menerapkan nama singkat: {e}")
-        return df
+        # Merge with indicator to track unmatched records
+        df_merged = df.merge(
+            ref[['Kode Satker', 'Uraian Satker-SINGKAT']], 
+            on='Kode Satker', 
+            how='left',
+            indicator=True
+        )
         
-# ===============================================
-# 🧩 Integration Hook Example (to be merged in main app)
-# ===============================================
-def integrate_reference_in_dashboard(df):
-    df = apply_reference_short_names(df)
-    return df
+        # Identify rows without matching reference
+        missing_refs = df_merged[df_merged['_merge'] == 'left_only'].copy()
+        
+        # If there are missing references, prepare error report
+        if len(missing_refs) > 0:
+            # Create error dataframe with required columns
+            error_cols = ['Tahun', 'Bulan', 'Kode Satker', 'Uraian Satker']
+            error_df = missing_refs[error_cols].drop_duplicates().sort_values(['Tahun', 'Bulan', 'Kode Satker'])
+            
+            # Add row numbers for reference
+            error_df.insert(0, 'No', range(1, len(error_df) + 1))
+            
+            # Create Excel file in memory using openpyxl
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                error_df.to_excel(writer, sheet_name='Satker Tidak Ditemukan', index=False)
+                
+                # Get workbook and worksheet for formatting
+                workbook = writer.book
+                worksheet = writer.sheets['Satker Tidak Ditemukan']
+                
+                # Define styles
+                header_fill = PatternFill(start_color='D7E4BD', end_color='D7E4BD', fill_type='solid')
+                header_font = Font(bold=True)
+                border = Border(
+                    left=Side(style='thin'),
+                    right=Side(style='thin'),
+                    top=Side(style='thin'),
+                    bottom=Side(style='thin')
+                )
+                center_align = Alignment(horizontal='center', vertical='center')
+                left_align = Alignment(horizontal='left', vertical='center')
+                
+                # Apply header formatting
+                for cell in worksheet[1]:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.border = border
+                    cell.alignment = center_align
+                
+                # Apply cell formatting and borders
+                for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, min_col=1, max_col=worksheet.max_column):
+                    for cell in row:
+                        cell.border = border
+                        cell.alignment = left_align
+                
+                # Adjust column widths
+                worksheet.column_dimensions['A'].width = 8   # No
+                worksheet.column_dimensions['B'].width = 12  # Tahun
+                worksheet.column_dimensions['C'].width = 15  # Bulan
+                worksheet.column_dimensions['D'].width = 20  # Kode Satker
+                worksheet.column_dimensions['E'].width = 50  # Uraian Satker
+            
+            excel_data = output.getvalue()
+            
+            # Display single warning message with download button
+            st.warning(
+                "⚠️ **Referensi singkatan untuk satker sebagaimana daftar terlampir tidak ditemukan.** "
+                f"\n\n📊 Total {len(error_df)} satker tidak ditemukan dalam database referensi. "
+                "\n\nMohon agar admin memeriksa dan mengupdate database referensi."
+            )
+            
+            # Provide download button
+            st.download_button(
+                label="📥 Download Daftar Satker Tidak Ditemukan (Excel)",
+                data=excel_data,
+                file_name=f"satker_tidak_ditemukan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
+        
+        # Apply short names - create 'Uraian Satker Final' column
+        df_merged['Uraian Satker Final'] = df_merged['Uraian Satker-SINGKAT'].fillna(
+            df_merged.get('Uraian Satker', '')
+        )
+        
+        # Remove merge indicator column
+        df_merged = df_merged.drop(columns=['_merge'])
+        
+        return df_merged
+        
+    except Exception as e:
+        st.error(f"❌ Gagal menerapkan nama singkat: {e}")
+        # Fallback: create 'Uraian Satker Final' from existing 'Uraian Satker'
+        if 'Uraian Satker Final' not in df.columns:
+            df['Uraian Satker Final'] = df.get('Uraian Satker', '')
+        return df
 
+
+# ===============================================
+# 📝 UPDATED: Helper function to create Satker column consistently
+# ===============================================
+def create_satker_column(df):
+    """
+    Creates 'Satker' column consistently across all data sources.
+    Should be called after apply_reference_short_names().
+    """
+    if 'Uraian Satker Final' not in df.columns:
+        df['Uraian Satker Final'] = df.get('Uraian Satker', '')
+    
+    df['Satker'] = (
+        df['Uraian Satker Final'].astype(str) + 
+        ' (' + df['Kode Satker'].astype(str) + ')'
+    )
+    return df
 
 # HALAMAN 1: DASHBOARD UTAMA
 def page_dashboard():
@@ -451,7 +551,7 @@ def page_dashboard():
         st.metric("⭐ Nilai 100", perfect_count)
     with col4:
         below_89 = len(df[df['Nilai Akhir (Nilai Total/Konversi Bobot)'] < 89])
-        st.metric("⚠️ Nilai < 89 (Belum Baik)", below_89)
+        st.metric("⚠️ Nilai < 89 (Predikat Belum Baik)", below_89)
     
     # ===============================
     # 📊 Ranking Charts — Compact Horizontal Strip (4 in 1)
@@ -473,8 +573,8 @@ def page_dashboard():
         y_max = st.slider(
             "Nilai Maksimum (Y-Axis)",
             min_value=51,
-            max_value=120,
-            value=120,
+            max_value=110,
+            value=110,
             step=1,
         )
 
@@ -572,49 +672,44 @@ def page_dashboard():
     
     # Satker dengan masalah
     st.subheader("🚨 Satker yang Memerlukan Perhatian Khusus")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Deviasi Hal 3 DIPA
-        fig_dev = create_problem_chart(
-            df, 
-            'Deviasi Halaman III DIPA', 
-            90, 
-            "Deviasi Hal 3 DIPA Belum Optimal (< 90)",
-            'less'
+
+    # 🎚️ Pengaturan Sumbu Y
+    st.markdown("###### Atur Skala Nilai (Sumbu Y)")
+    col_min, col_max = st.columns(2)
+    with col_min:
+        y_min_dev = st.slider(
+            "Nilai Minimum (Y-Axis)",
+            min_value=0,
+            max_value=50,
+            value=40,
+            step=1,
+            key="ymin_dev"
         )
-        if fig_dev:
-            st.plotly_chart(fig_dev, use_container_width=True)
-        else:
-            st.success("✅ Semua satker sudah optimal untuk Deviasi Hal 3 DIPA")
-    
-    with col2:
-        # Pengelolaan UP dan TUP
-        fig_up = create_problem_chart(
-            df, 
-            'Pengelolaan UP dan TUP', 
-            100, 
-            "Pengelolaan UP dan TUP Belum Optimal (< 100)",
-            'less'
+    with col_max:
+        y_max_dev = st.slider(
+            "Nilai Maksimum (Y-Axis)",
+            min_value=51,
+            max_value=110,
+            value=110,
+            step=1,
+            key="ymax_dev"
         )
-        if fig_up:
-            st.plotly_chart(fig_up, use_container_width=True)
-        else:
-            st.success("✅ Semua satker sudah optimal untuk Pengelolaan UP dan TUP")
-    
-    # Capaian Output
-    fig_output = create_problem_chart(
+
+    # Deviasi Hal 3 DIPA
+    fig_dev = create_problem_chart(
         df, 
-        'Capaian Output', 
-        100, 
-        "Capaian Output Belum Optimal (< 100)",
-        'less'
+        'Deviasi Halaman III DIPA', 
+        90, 
+        "Deviasi Hal 3 DIPA Belum Optimal (< 90)",
+        'less',
+        y_min=y_min_dev,
+        y_max=y_max_dev,
+        show_yaxis=True
     )
-    if fig_output:
-        st.plotly_chart(fig_output, use_container_width=True)
+    if fig_dev:
+        st.plotly_chart(fig_dev, use_container_width=True)
     else:
-        st.success("✅ Semua satker sudah optimal untuk Capaian Output")
+        st.success("✅ Semua satker sudah optimal untuk Deviasi Hal 3 DIPA")
     
     st.markdown("---")
     
@@ -689,9 +784,25 @@ def page_dashboard():
         height=600
     )
 
-# HALAMAN 2: DASHBOARD TREN HISTORIS
+# HALAMAN 2: DASHBOARD INTERNAL KPPN (Protected)
 def page_trend():
-    st.title("📈 Dashboard Tren Historis IKPA Satker Mitra Kerja KPPN Baturaja")
+    st.title("🏛️ Early Warning System Kinerja Keuangan Satker")
+
+    # 🔒 Access restriction (same password as Admin page)
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        st.warning("🔒 Halaman ini memerlukan autentikasi Admin untuk diakses.")
+        password = st.text_input("Masukkan Password", type="password")
+        if st.button("Login"):
+            if password == "109KPPN":
+                st.session_state.authenticated = True
+                st.success("✅ Login berhasil! Silakan akses halaman ini.")
+                st.rerun()
+            else:
+                st.error("❌ Password salah!")
+        return
     
     if not st.session_state.data_storage:
         st.warning("⚠️ Belum ada data yang diunggah. Silakan unggah data melalui halaman Admin.")
@@ -711,15 +822,153 @@ def page_trend():
         return
     
     df_all = pd.concat(all_data, ignore_index=True)
+      
+    # Analisis tren dan Early Warning System
+    # Gunakan data periode terkini
+    latest_period = sorted(st.session_state.data_storage.keys(), key=lambda x: (int(x[1]), MONTH_ORDER.get(x[0].upper(), 0)), reverse=True)[0]
+    df_latest = st.session_state.data_storage[latest_period]
+
+    st.markdown("---")
+    st.subheader("🚨 Satker yang Memerlukan Perhatian Khusus")
+
+    # 🎚️ Pengaturan Sumbu Y
+    st.markdown("###### Atur Skala Nilai (Sumbu Y)")
+    col_min, col_max = st.columns(2)
+    with col_min:
+        y_min_int = st.slider(
+            "Nilai Minimum (Y-Axis)",
+            min_value=0,
+            max_value=50,
+            value=50,
+            step=1,
+            key="ymin_internal"
+        )
+    with col_max:
+        y_max_int = st.slider(
+            "Nilai Maksimum (Y-Axis)",
+            min_value=51,
+            max_value=110,
+            value=110,
+            step=1,
+            key="ymax_internal"
+        )
+
+    # 📊 Highlights Kinerja Satker yang Perlu Perhatian Khusus
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig_up = create_problem_chart(
+            df_latest,
+            'Pengelolaan UP dan TUP',
+            100,
+            "Pengelolaan UP dan TUP Belum Optimal (< 100)",
+            'less',
+            y_min=y_min_int,
+            y_max=y_max_int,
+            show_yaxis=True  # Left chart shows Y-axis
+        )
+        if fig_up:
+            st.plotly_chart(fig_up, use_container_width=True)
+        else:
+            st.success("✅ Semua satker sudah optimal untuk Pengelolaan UP dan TUP")
+
+    with col2:
+        fig_output = create_problem_chart(
+            df_latest,
+            'Capaian Output',
+            100,
+            "Capaian Output Belum Optimal (< 100)",
+            'less',
+            y_min=y_min_int,
+            y_max=y_max_int,
+            show_yaxis=False  # Right chart hides Y-axis
+        )
+        if fig_output:
+            st.plotly_chart(fig_output, use_container_width=True)
+        else:
+            st.success("✅ Semua satker sudah optimal untuk Capaian Output")
     
-    # Filter periode
-    st.subheader("🎯 Filter Analisis")
+    warnings = []
+
+    st.markdown("---")
+# Analisis Tren
+    st.subheader("📈 Analisis Tren")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        df_all['Month_Num'] = df_all['Bulan'].str.upper().map(MONTH_ORDER)
-        df_all['Period_Sort'] = df_all.apply(lambda x: f"{int(x['Tahun']):04d}-{int(x['Month_Num']):02d}", axis=1)
+        # 🔍 DETAILED ERROR CHECKING
+        st.write("🔍 Checking data quality...")
+        
+        # Map month names to numbers
+        df_all['Month_Num'] = df_all['Bulan'].str.strip().str.upper().map(MONTH_ORDER)
+        
+        # Check for unmapped months
+        missing_months = df_all[df_all['Month_Num'].isna()]
+        if len(missing_months) > 0:
+            st.error("❌ **DITEMUKAN BULAN YANG TIDAK VALID:**")
+            
+            # Group by period to show which files have issues
+            problem_periods = missing_months.groupby(['Bulan', 'Tahun']).size().reset_index(name='Count')
+            
+            for _, row in problem_periods.iterrows():
+                st.warning(f"⚠️ Periode **{row['Bulan']} {row['Tahun']}** - Nama bulan '{row['Bulan']}' tidak dikenali (ditemukan di {row['Count']} baris)")
+            
+            st.info("""
+            **Solusi:**
+            1. Periksa file Excel untuk periode yang bermasalah
+            2. Pastikan nama bulan sesuai format: JANUARI, FEBRUARI, MARET, dst (huruf besar)
+            3. Upload ulang file yang bermasalah dari halaman Admin
+            """)
+            
+            # Show expected month names
+            with st.expander("📋 Lihat format bulan yang valid"):
+                st.write("Format yang diterima:")
+                st.code(", ".join(MONTH_ORDER.keys()))
+            
+            # Option to proceed with cleaned data
+            if st.checkbox("⚠️ Abaikan data bermasalah dan lanjutkan"):
+                df_all = df_all.dropna(subset=['Month_Num'])
+                st.info(f"✅ Data dibersihkan. Sisa {len(df_all)} baris.")
+            else:
+                st.stop()
+        
+        # Check for invalid years
+        invalid_years = df_all[df_all['Tahun'].isna()]
+        if len(invalid_years) > 0:
+            st.error("❌ **DITEMUKAN TAHUN YANG TIDAK VALID:**")
+            
+            problem_periods = invalid_years.groupby(['Bulan']).size().reset_index(name='Count')
+            for _, row in problem_periods.iterrows():
+                st.warning(f"⚠️ Bulan **{row['Bulan']}** - Tahun tidak valid (ditemukan di {row['Count']} baris)")
+            
+            st.stop()
+        
+        # Try to create Period_Sort with detailed error handling
+        try:
+            # Convert to int safely
+            df_all['Tahun_Int'] = df_all['Tahun'].astype(int)
+            df_all['Month_Num_Int'] = df_all['Month_Num'].astype(int)
+            
+            # Create Period_Sort
+            df_all['Period_Sort'] = df_all.apply(
+                lambda x: f"{x['Tahun_Int']:04d}-{x['Month_Num_Int']:02d}", 
+                axis=1
+            )
+            
+            st.success(f"✅ Data valid - {len(df_all)} baris dari {df_all['Period'].nunique()} periode")
+            
+        except Exception as e:
+            st.error(f"❌ **ERROR saat membuat Period_Sort:** {str(e)}")
+            
+            # Show problematic rows
+            st.write("**Baris yang bermasalah:**")
+            problem_cols = ['Bulan', 'Tahun', 'Month_Num', 'Kode Satker', 'Uraian Satker']
+            st.dataframe(df_all[problem_cols].head(20))
+            
+            st.stop()
+        
+        # Now create the selectbox
         available_periods = sorted(df_all['Period_Sort'].unique())
         start_period = st.selectbox(
             "Periode Awal",
@@ -769,12 +1018,20 @@ def page_trend():
         # convert year to int if possible, month remain string but sorting will be stable for same year
         try:
             y = int(yr)
-        except:
-            y = yr
+        except Exception as e:
+            st.warning(f"⚠️ Tidak bisa convert tahun '{yr}' untuk periode {mon}: {e}")
+            y = 0
         return (y, mon)
 
-    latest_period = sorted(st.session_state.data_storage.keys(), key=period_sort_key, reverse=True)[0]
-    latest_df = st.session_state.data_storage[latest_period].copy()
+    try:
+        latest_period = sorted(st.session_state.data_storage.keys(), key=period_sort_key, reverse=True)[0]
+        latest_df = st.session_state.data_storage[latest_period].copy()
+    except Exception as e:
+        st.error(f"❌ Error mendapatkan periode terbaru: {e}")
+        st.write("**Periode yang tersedia:**")
+        st.write(list(st.session_state.data_storage.keys()))
+        st.stop()
+    
     # Make sure 'Kode Satker' exists and is a string
     if 'Kode Satker' in latest_df.columns:
         latest_df['Kode Satker'] = latest_df['Kode Satker'].astype(str)
@@ -786,9 +1043,9 @@ def page_trend():
     # use the new 'Satker' column for selection (unique)
     all_satker = sorted(df_all['Satker'].unique())
     selected_satker = st.multiselect(
-    "Pilih Satker",
-    options=all_satker,
-    default=[s for s in all_satker if any(str(code) in s for code in bottom_10_default)][:10]
+        "Pilih Satker",
+        options=all_satker,
+        default=[s for s in all_satker if any(str(code) in s for code in bottom_10_default)][:10]
     )
     
     if not selected_satker:
@@ -800,24 +1057,35 @@ def page_trend():
     
     # Buat line chart
     fig = go.Figure()
-    for satker in selected_satker:
-        df_satker = df_plot[df_plot['Satker'] == satker].sort_values('Period_Sort')
+    
+    try:
+        for satker in selected_satker:
+            df_satker = df_plot[df_plot['Satker'] == satker].sort_values('Period_Sort')
 
-        # Ensure x-axis uses correct chronological month order
-        fig.add_trace(go.Scatter(
-            x=pd.Categorical(
-                df_satker['Period'],
-                categories=[f"{m} {y}" for y, m in sorted(
-                    {(int(x['Tahun']), x['Bulan'].upper()) for _, x in df_all.iterrows()},
-                    key=lambda t: (t[0], MONTH_ORDER.get(t[1], 0))
-                )],
-                ordered=True
-            ),
-            y=df_satker[selected_metric],
-            mode='lines+markers',
-            name=satker,
-            hovertemplate='<b>%{fullData.name}</b><br>Periode: %{x}<br>Nilai: %{y:.2f}<extra></extra>'
-        ))
+            # Ensure x-axis uses correct chronological month order
+            categories = [f"{m} {y}" for y, m in sorted(
+                {(int(x['Tahun']), x['Bulan'].upper()) for _, x in df_all.iterrows()},
+                key=lambda t: (t[0], MONTH_ORDER.get(t[1], 0))
+            )]
+            
+            fig.add_trace(go.Scatter(
+                x=pd.Categorical(
+                    df_satker['Period'],
+                    categories=categories,
+                    ordered=True
+                ),
+                y=df_satker[selected_metric],
+                mode='lines+markers',
+                name=satker,
+                hovertemplate='<b>%{fullData.name}</b><br>Periode: %{x}<br>Nilai: %{y:.2f}<extra></extra>'
+            ))
+    except Exception as e:
+        st.error(f"❌ Error membuat chart: {str(e)}")
+        st.write("**Debug Info:**")
+        st.write(f"Selected satker: {selected_satker}")
+        st.write(f"df_plot shape: {df_plot.shape}")
+        st.write(f"Unique periods in df_plot: {df_plot['Period'].unique()}")
+        st.stop()
     
     fig.update_layout(
         title=f"Tren {selected_metric}",
@@ -835,12 +1103,9 @@ def page_trend():
     )
     
     st.plotly_chart(fig, use_container_width=True)
-    
-    # Analisis tren
-    st.markdown("---")
-    st.subheader("⚠️ Analisis Tren dan Peringatan")
-    
-    warnings = []
+
+    # Early Warning Satker Tren Menurun
+    warnings = []  # Initialize warnings list
     
     for satker in selected_satker:
         df_satker = df_plot[df_plot['Satker'] == satker].sort_values('Period_Sort')
@@ -877,7 +1142,7 @@ def page_trend():
             st.markdown("---")
     else:
         st.success("✅ Tidak ada satker dengan tren menurun pada periode yang dipilih!")
-
+        
 # ============================================================
 # 🔐 HALAMAN 3: ADMIN (Revised with integrated Reference Upload)
 # ============================================================
@@ -928,6 +1193,7 @@ def page_admin():
     # TAB 1: UPLOAD DATA (including Reference Upload)
     # ============================================================
     with tab1:
+        # Submenu Upload Data Bulanan
         st.subheader("📤 Upload Data Bulanan IKPA")
 
         upload_year = st.selectbox(
@@ -994,23 +1260,8 @@ def page_admin():
                     except Exception as e:
                         st.error(f"❌ Gagal menyimpan ke GitHub: {e}")
 
-                    # 🧩 Save merged reference data to GitHub (templates folder)
-                    try:
-                        excel_bytes_ref = io.BytesIO()
-                        with pd.ExcelWriter(excel_bytes_ref, engine='openpyxl') as writer:
-                            st.session_state.reference_df.to_excel(writer, index=False, sheet_name='Data Referensi')
-                        excel_bytes_ref.seek(0)
 
-                        save_file_to_github(
-                            excel_bytes_ref.getvalue(),
-                            "Template_Data_Referensi.xlsx",
-                            folder="templates"
-                        )
-                        st.success("💾 Data Referensi berhasil disimpan ke GitHub (templates/Template_Data_Referensi.xlsx).")
-
-                    except Exception as e:
-                        st.error(f"❌ Gagal menyimpan Data Referensi ke GitHub: {e}")
-
+        # Sub Menu Upload Data Referensi
         st.markdown("---")
         st.subheader("📚 Upload / Perbarui Data Referensi Satker & K/L")
         st.info("""
@@ -1214,16 +1465,8 @@ def page_admin():
 # 🔹 MAIN APP
 # ===============================
 def main():
-    # ✅ Load data dari GitHub jika session_state kosong (hanya sekali di awal)
-    if not st.session_state.get("data_storage"):
-        with st.spinner("🔄 Memuat data dari GitHub..."):
-            try:
-                load_data_from_github()
-            except Exception as e:
-                st.error(f"⚠️ Gagal memuat data dari GitHub: {e}")
-
     # ============================================================
-    # 🧩 Auto-load Reference Data from GitHub
+    # 🧩 Auto-load Reference Data from GitHub FIRST
     # ============================================================
     if 'reference_df' not in st.session_state:
         try:
@@ -1237,16 +1480,19 @@ def main():
             ref_df = pd.read_excel(io.BytesIO(ref_data))
             ref_df['Kode Satker'] = ref_df['Kode Satker'].astype(str)
             st.session_state.reference_df = ref_df
-
-            # 🧩 Reapply short names to all loaded data (ensure consistency)
-            if 'reference_df' in st.session_state and st.session_state.reference_df is not None:
-                for key, df in st.session_state.data_storage.items():
-                    st.session_state.data_storage[key] = apply_reference_short_names(df)
-
             st.info(f"📚 Data Referensi dimuat otomatis ({len(ref_df)} baris).")
-
         except Exception as e:
             st.warning(f"⚠️ Tidak dapat memuat Data Referensi dari GitHub: {e}")
+
+    # ============================================================
+    # ✅ Then load data from GitHub (files can now be merged cleanly)
+    # ============================================================
+    if not st.session_state.get("data_storage"):
+        with st.spinner("🔄 Memuat data dari GitHub..."):
+            try:
+                load_data_from_github()
+            except Exception as e:
+                st.error(f"⚠️ Gagal memuat data dari GitHub: {e}")
 
     # ===============================
     # 🔹 Sidebar Navigation
@@ -1258,7 +1504,7 @@ def main():
         "Pilih Halaman",
         options=[
             "📊 Dashboard Utama",
-            "📈 Tren Historis",
+            "📈 Dashboard Internal",
             "🔐 Admin"
         ],
         index=0
@@ -1282,11 +1528,11 @@ def main():
         except Exception as e:
             st.error(f"❌ Terjadi kesalahan di Dashboard Utama: {e}")
 
-    elif page == "📈 Tren Historis":
+    elif page == "📈 Dashboard Internal":
         try:
             page_trend()
         except Exception as e:
-            st.error(f"❌ Terjadi kesalahan di Dashboard Tren Historis: {e}")
+            st.error(f"❌ Terjadi kesalahan di Dashboard Internal KPPN: {e}")
 
     elif page == "🔐 Admin":
         try:
