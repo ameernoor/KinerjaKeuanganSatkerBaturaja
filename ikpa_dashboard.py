@@ -750,44 +750,67 @@ def page_dashboard():
                 else:
                     df_year = pd.concat(dfs, ignore_index=True)
 
-                    # normalize month names and get available months sorted
-                    df_year['Bulan_upper'] = df_year['Bulan'].astype(str).str.strip().str.upper()
-                    months_available = sorted(df_year['Bulan_upper'].unique(), key=lambda m: MONTH_ORDER.get(m, 0))
+                    # --- normalize month names (defensive) and get available months sorted ---
+                    df_year['Bulan_raw'] = df_year['Bulan'].astype(str).fillna('').str.strip()
 
-                    # determine period columns to show
+                    # common misspellings / variants mapping to canonical uppercase month names
+                    month_aliases = {
+                        'PEBRUARI': 'FEBRUARI', 'PEBRUARY': 'FEBRUARI', 'NOPEMBER': 'NOVEMBER',
+                        'NOVEMBER ': 'NOVEMBER', 'SEPT': 'SEPTEMBER', 'SEP': 'SEPTEMBER',
+                        'MAR': 'MARET', 'MRT': 'MARET'
+                    }
+                    # canonical display name mapping (upper -> Capitalized) using your MONTH_ORDER keys
+                    canonical_display = {k.upper(): k.capitalize() for k in MONTH_ORDER.keys()}
+
+                    def normalize_month_text(txt):
+                        t = str(txt).strip().upper()
+                        # remove punctuation and stray whitespace
+                        t = re.sub(r'[^A-Z]', '', t)
+                        # substitute aliases
+                        if t in month_aliases:
+                            return month_aliases[t]
+                        # If it's already a known canonical month, return as-is
+                        if t in MONTH_ORDER:
+                            return t
+                        # try to match by prefix (e.g. 'JAN' -> 'JANUARI')
+                        for mm in MONTH_ORDER.keys():
+                            if mm.startswith(t) or mm.startswith(t[:3]):
+                                return mm
+                        # fallback: return original upper (may produce NaNs later which we drop)
+                        return t
+
+                    df_year['Bulan_upper'] = df_year['Bulan_raw'].apply(normalize_month_text)
+
+                    # collect months present in this year and sort by MONTH_ORDER
+                    months_available = sorted(
+                        [m for m in df_year['Bulan_upper'].unique() if m and m in MONTH_ORDER],
+                        key=lambda m: MONTH_ORDER.get(m, 0)
+                    )
+
+                    # -------------------------
+                    # decide period columns (monthly or quarterly)
+                    # -------------------------
                     if period_type == 'monthly':
-                        # sort months using MONTH_ORDER, then format nicely (capitalize)
-                        months_sorted = sorted(
-                            [m for m in months_available if m and MONTH_ORDER.get(m, 0) > 0],
-                            key=lambda m: MONTH_ORDER.get(m, 0)
-                        )
-                        display_period_cols = [m.capitalize() for m in months_sorted]
-                        # rename columns to match display order
-                        for m in months_sorted:
-                            display_name = m.capitalize()
-                            if m in df_agg.columns:
-                                df_agg.rename(columns={m: display_name}, inplace=True)
+                        # ordered canonical month keys (e.g. ['JANUARI','FEBRUARI',...]) for months actually present
+                        months_sorted = months_available
+                        # display names in the same order (e.g. 'Januari', 'Februari'...)
+                        display_month_names_ordered = [canonical_display.get(m, m.capitalize()) for m in months_sorted]
                     else:
-                        # quarterly: check whether end-month for each quarter exists; map to Tw I..IV
+                        # quarterly: check end-month presence
                         quarter_map = {
                             'Tw I': 'MARET',
                             'Tw II': 'JUNI',
                             'Tw III': 'SEPTEMBER',
                             'Tw IV': 'DESEMBER'
                         }
-                        period_cols = []
+                        quarter_order = []
                         for tw, end_month in quarter_map.items():
                             if end_month in months_available:
-                                period_cols.append(tw)
+                                quarter_order.append(tw)
 
-                    # Build a pivot table: index Kode BA, Kode Satker, Uraian Satker-RINGKAS
-                    key_cols = ['Kode BA', 'Kode Satker', 'Uraian Satker-RINGKAS']
-                    # ensure these exist in df_year
-                    for c in key_cols:
-                        if c not in df_year.columns:
-                            df_year[c] = ''
-
-                    # for monthly, pivot by month names => use month uppercase
+                    # -------------------------
+                    # Build records for pivoting (use normalized months)
+                    # -------------------------
                     records = []
                     for _, row in df_year.iterrows():
                         rec = {
@@ -795,22 +818,21 @@ def page_dashboard():
                             'Kode Satker': row.get('Kode Satker', ''),
                             'Uraian Satker-RINGKAS': row.get('Uraian Satker-RINGKAS', row.get('Uraian Satker Final', row.get('Uraian Satker','')))
                         }
-                        month_up = str(row.get('Bulan','')).strip().upper()
+                        month_up = row.get('Bulan_upper', '')
                         if period_type == 'monthly':
-                            rec[month_up] = row.get(selected_indicator, np.nan)
+                            # only include canonical months
+                            if month_up in MONTH_ORDER:
+                                rec[month_up] = row.get(selected_indicator, np.nan)
                         else:
-                            # quarterly: map month to Tw label if it is one of end months
-                            tw_label = None
-                            if month_up in ('MARET','MARET'.upper()):
-                                tw_label = 'Tw I'
-                            if month_up in ('JUNI','JUNI'.upper()):
-                                tw_label = 'Tw II'
-                            if month_up in ('SEPTEMBER','SEPTEMBER'.upper()):
-                                tw_label = 'Tw III'
-                            if month_up in ('DESEMBER','DESEMBER'.upper()):
-                                tw_label = 'Tw IV'
-                            if tw_label:
-                                rec[tw_label] = row.get(selected_indicator, np.nan)
+                            # map to quarter label if it's exactly an end-month
+                            if month_up == 'MARET':
+                                rec['Tw I'] = row.get(selected_indicator, np.nan)
+                            elif month_up == 'JUNI':
+                                rec['Tw II'] = row.get(selected_indicator, np.nan)
+                            elif month_up == 'SEPTEMBER':
+                                rec['Tw III'] = row.get(selected_indicator, np.nan)
+                            elif month_up == 'DESEMBER':
+                                rec['Tw IV'] = row.get(selected_indicator, np.nan)
                         records.append(rec)
 
                     df_rec = pd.DataFrame(records)
@@ -819,51 +841,52 @@ def page_dashboard():
                     else:
                         # aggregate by Kode Satker (take last non-null value for each period column)
                         agg_dict = {}
-                        # identify all possible period columns present in df_rec
                         possible_period_cols = [c for c in df_rec.columns if c not in ['Kode BA','Kode Satker','Uraian Satker-RINGKAS']]
                         for c in possible_period_cols:
-                            agg_dict[c] = lambda x: x.dropna().astype(float).iloc[-1] if len(x.dropna())>0 else np.nan
+                            # use a named function to avoid late-binding lambda issues
+                            def last_non_null(x):
+                                s = x.dropna()
+                                return float(s.iloc[-1]) if len(s) > 0 else np.nan
+                            agg_dict[c] = last_non_null
 
                         df_agg = df_rec.groupby(['Kode BA','Kode Satker','Uraian Satker-RINGKAS']).agg(agg_dict).reset_index()
 
-                        # Rename monthly period columns to nicer display (capitalize)
+                        # === AFTER df_agg exists: rename raw canonical month columns to display names in order ===
                         display_period_cols = []
                         if period_type == 'monthly':
-                            # convert keys to capitalized form e.g. JANUARI -> Januari
-                            month_display = []
-                            for m in possible_period_cols:
-                                m_up = m.upper()
-                                if MONTH_ORDER.get(m_up,0)>0:
-                                    display_name = m_up.capitalize()
-                                    df_agg.rename(columns={m: display_name}, inplace=True)
+                            # raw canonical months present in df_agg (uppercase like 'JANUARI')
+                            raw_cols_upper = {c.upper(): c for c in df_agg.columns}
+                            for m in months_sorted:  # months_sorted is already in calendar order
+                                if m in raw_cols_upper:
+                                    raw_col = raw_cols_upper[m]
+                                    display_name = canonical_display.get(m, m.capitalize())
+                                    if raw_col != display_name:
+                                        # rename raw -> nice display (e.g. 'JANUARI' -> 'Januari')
+                                        df_agg.rename(columns={raw_col: display_name}, inplace=True)
                                     display_period_cols.append(display_name)
                         else:
-                            # quarter names already Tw I..IV
-                            for p in ['Tw I','Tw II','Tw III','Tw IV']:
-                                if p in df_agg.columns:
-                                    display_period_cols.append(p)
+                            # quarter names in the desired order (Tw I..Tw IV)
+                            for tw in ['Tw I','Tw II','Tw III','Tw IV']:
+                                if tw in df_agg.columns:
+                                    display_period_cols.append(tw)
 
-                        # remove period columns that are all NaN (not available yet)
+                        # drop period columns that are all NaN (not available)
                         display_period_cols = [c for c in display_period_cols if not df_agg[c].isna().all()]
 
-                        # Calculate 'latest' value per row based on the last period column available
+                        # pick the latest column for ranking (last in display_period_cols)
                         if display_period_cols:
                             last_col = display_period_cols[-1]
                             df_agg['Latest_Value'] = df_agg[last_col]
                         else:
                             df_agg['Latest_Value'] = np.nan
 
-                        # Compute ranking: higher value => better rank (1 = highest)
+                        # compute ranks (1 = highest)
                         df_agg['Peringkat'] = df_agg['Latest_Value'].rank(ascending=False, method='dense').astype('Int64')
 
-                        # Sort display: by default initial display order bottom ranking first to top ranking last
-                        df_agg_sorted = df_agg.sort_values(by=['Peringkat'], ascending=True)  # ascending: rank 1 at bottom?
-                        # we want bottom first (largest numeric rank at top), so sort by Peringkat descending
+                        # default display order: bottom ranking first
                         df_agg_sorted = df_agg.sort_values(by=['Peringkat'], ascending=False)
 
-                        # Reorder columns: Peringkat, Kode BA, Kode Satker, Uraian Satker-RINGKAS, then periods
                         final_cols = ['Peringkat','Kode BA','Kode Satker','Uraian Satker-RINGKAS'] + display_period_cols
-                        # ensure cols exist
                         for c in final_cols:
                             if c not in df_agg_sorted.columns:
                                 df_agg_sorted[c] = np.nan
