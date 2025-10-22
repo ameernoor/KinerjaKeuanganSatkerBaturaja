@@ -559,235 +559,80 @@ def create_problem_chart(df, column, threshold, title, comparison='less', y_min=
     return fig
 
 # ===============================================
-# 🧩 Helper to apply reference short names (Fixed)
+# 🧩 Helper to apply reference short names (Simplified)
 # ===============================================
 def apply_reference_short_names(df):
     """
-    Apply reference short names to dataframe with advanced error tracking.
-    If errors found, triggers Excel download with error details.
-
-    This function only adds 'Uraian Satker-SINGKAT' and 'Uraian Satker Final' columns.
-    The 'Satker' column should be created by the caller for consistency.
+    Simple version: apply reference short names to dataframe.
+    - Adds 'Uraian Satker Final' (from reference 'Uraian Satker-SINGKAT' when available,
+      otherwise falls back to original 'Uraian Satker').
+    - Performs basic normalization on 'Kode Satker' before merging.
+    - Minimal user messages (no Excel/CSV creation, no verbose debugging).
     """
     # Defensive copy
     df = df.copy()
 
-    # Ensure period columns exist so reports can include period info
+    # Ensure period columns exist
     if 'Bulan' not in df.columns:
         df['Bulan'] = ''
     if 'Tahun' not in df.columns:
         df['Tahun'] = ''
 
-
-    # If no reference data, fallback
+    # If no reference in session, fallback silently to original names
     if 'reference_df' not in st.session_state or st.session_state.reference_df is None:
         if 'Uraian Satker Final' not in df.columns:
             df['Uraian Satker Final'] = df.get('Uraian Satker', '')
         return df
 
+    # Copy reference
     ref = st.session_state.reference_df.copy()
 
-    # 🧩 Apply normalization to both main data and reference data
+    # Normalize Kode Satker if column exists; else create empty codes to avoid crashes
     if 'Kode Satker' in df.columns:
         df['Kode Satker'] = df['Kode Satker'].apply(normalize_kode_satker)
+    else:
+        df['Kode Satker'] = ''
+
     if 'Kode Satker' in ref.columns:
         ref['Kode Satker'] = ref['Kode Satker'].apply(normalize_kode_satker)
+    else:
+        # If reference has no Kode Satker, cannot match — fallback
+        if 'Uraian Satker Final' not in df.columns:
+            df['Uraian Satker Final'] = df.get('Uraian Satker', '')
+        return df
 
     # Ensure kode fields are strings and stripped
     df['Kode Satker'] = df['Kode Satker'].astype(str).str.strip()
     ref['Kode Satker'] = ref['Kode Satker'].astype(str).str.strip()
 
-    # Check that reference table contains the short-name column we expect
+    # If the reference does not contain the expected short-name column, fallback
     if 'Uraian Satker-SINGKAT' not in ref.columns:
-        # Informative one-time error and store in activity log
-        st.error("❌ Kolom 'Uraian Satker-SINGKAT' tidak ditemukan di Data Referensi. "
-                 "Mohon periksa Template_Data_Referensi.xlsx (kolom wajib hilang atau berganti nama).")
-        st.info("Solusi singkat: perbarui file Data Referensi dengan kolom 'Uraian Satker-SINGKAT'.")
-        st.session_state.activity_log.append({
-            "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "Aksi": "Reference load error",
-            "Periode": ", ".join(sorted(df['Period'].unique())) if 'Period' in df.columns else f"{df['Bulan'].iloc[0]} {df['Tahun'].iloc[0]}",
-            "Status": "❌ Missing column Uraian Satker-SINGKAT"
-        })
-        # fallback: create final name column and return
         if 'Uraian Satker Final' not in df.columns:
             df['Uraian Satker Final'] = df.get('Uraian Satker', '')
         return df
 
+    # Perform the merge and create final column; keep it simple and robust
     try:
-        # Merge with indicator to track unmatched records
         df_merged = df.merge(
             ref[['Kode Satker', 'Uraian Satker-SINGKAT']],
             on='Kode Satker',
             how='left',
-            indicator=True
+            indicator=False
         )
 
-        # Identify rows without matching reference
-        missing_refs = df_merged[df_merged['_merge'] == 'left_only'].copy()
-
-        # If there are missing references, prepare error report
-        if len(missing_refs) > 0:
-            # Ensure Tahun/Bulan exist for grouping
-            missing_refs['Tahun'] = missing_refs.get('Tahun', '')
-            missing_refs['Bulan'] = missing_refs.get('Bulan', '')
-
-            # Count failed rows per month-year (counts actual failing rows)
-            missing_counts = (
-                missing_refs
-                .groupby(['Tahun', 'Bulan'], dropna=False)
-                .size()
-                .reset_index(name='Failed Rows')
-                .sort_values(['Tahun', 'Bulan'])
-            )
-
-            # Detail sheet: unique missing satker rows (avoid duplicate rows)
-            error_cols = ['Tahun', 'Bulan', 'Kode Satker', 'Uraian Satker']
-            # If some columns missing in DF, create them to avoid key errors
-            for c in error_cols:
-                if c not in missing_refs.columns:
-                    missing_refs[c] = ''
-            error_df = (
-                missing_refs[error_cols]
-                .drop_duplicates()
-                .sort_values(['Tahun', 'Bulan', 'Kode Satker'])
-            )
-
-            # Add row numbers for reference
-            error_df.insert(0, 'No', range(1, len(error_df) + 1))
-
-            # Create Excel file in memory using openpyxl
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # Detailed sheet: unique missing satker rows
-                error_df.to_excel(writer, sheet_name='Satker Tidak Ditemukan', index=False)
-
-                # Summary sheet: failed rows per month-year + totals
-                summary_df = missing_counts.copy()
-                summary_df['Bulan'] = summary_df['Bulan'].astype(str)
-                summary_df['Tahun'] = summary_df['Tahun'].astype(str)
-                total_failed_rows = len(missing_refs)
-                totals_row = pd.DataFrame([{
-                    'Tahun': '',
-                    'Bulan': 'TOTAL',
-                    'Failed Rows': total_failed_rows
-                }])
-                summary_out = pd.concat([summary_df, totals_row], ignore_index=True)
-                summary_out.to_excel(writer, sheet_name='Summary', index=False)
-
-                # Formatting for both sheets
-                workbook = writer.book
-                detail_ws = writer.sheets['Satker Tidak Ditemukan']
-                summary_ws = writer.sheets['Summary']
-
-                header_fill = PatternFill(start_color='D7E4BD', end_color='D7E4BD', fill_type='solid')
-                header_font = Font(bold=True)
-                border = Border(
-                    left=Side(style='thin'),
-                    right=Side(style='thin'),
-                    top=Side(style='thin'),
-                    bottom=Side(style='thin')
-                )
-                center_align = Alignment(horizontal='center', vertical='center')
-                left_align = Alignment(horizontal='left', vertical='center')
-
-                # Apply header formatting to detail sheet
-                for cell in detail_ws[1]:
-                    cell.fill = header_fill
-                    cell.font = header_font
-                    cell.border = border
-                    cell.alignment = center_align
-
-                for row in detail_ws.iter_rows(min_row=2, max_row=detail_ws.max_row, min_col=1, max_col=detail_ws.max_column):
-                    for cell in row:
-                        cell.border = border
-                        cell.alignment = left_align
-
-                # Column widths
-                try:
-                    detail_ws.column_dimensions['A'].width = 8   # No
-                    detail_ws.column_dimensions['B'].width = 12  # Tahun
-                    detail_ws.column_dimensions['C'].width = 15  # Bulan
-                    detail_ws.column_dimensions['D'].width = 20  # Kode Satker
-                    detail_ws.column_dimensions['E'].width = 50  # Uraian Satker
-                except Exception:
-                    pass
-
-                # Summary formatting
-                for cell in summary_ws[1]:
-                    cell.fill = header_fill
-                    cell.font = header_font
-                    cell.border = border
-                    cell.alignment = center_align
-
-                for row in summary_ws.iter_rows(min_row=2, max_row=summary_ws.max_row, min_col=1, max_col=summary_ws.max_column):
-                    for cell in row:
-                        cell.border = border
-                        cell.alignment = left_align
-
-                try:
-                    summary_ws.column_dimensions['A'].width = 12
-                    summary_ws.column_dimensions['B'].width = 18
-                    summary_ws.column_dimensions['C'].width = 15
-                except Exception:
-                    pass
-
-            excel_data = output.getvalue()
-
-            # Build human-readable month/year summary for the warning message
-            summary_items = []
-            for _, r in missing_counts.iterrows():
-                bulan = str(r['Bulan'])
-                tahun = str(r['Tahun'])
-                failed = int(r['Failed Rows'])
-                summary_items.append(f"{bulan} {tahun}: {failed} baris")
-            months_summary = "; ".join(summary_items)
-
-            # Log the event to activity log
-            st.session_state.activity_log.append({
-                "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Aksi": "Reference match failure",
-                "Periode": months_summary,
-                "Status": f"❌ {total_failed_rows} baris gagal dicocokkan"
-            })
-
-            # Show informative warning + download button
-            st.warning(
-                "⚠️ **Referensi singkatan untuk satker sebagaimana daftar terlampir tidak ditemukan.** "
-                f"\n\n📊 Total **{total_failed_rows}** baris gagal dicocokkan di data bulanan ({len(error_df)} satker unik tidak ditemukan)."
-                f"\n\n🗓️ Bulan/Tahun dengan baris gagal: {months_summary}."
-                "\n\nMohon agar admin memeriksa dan mengupdate database referensi."
-            )
-
-            st.download_button(
-                label="📥 Download Daftar Satker Tidak Ditemukan (Excel)",
-                data=excel_data,
-                file_name=f"satker_tidak_ditemukan_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary"
-            )
-
-        # Apply short names - create 'Uraian Satker Final' column
+        # Create final name column using reference when available, otherwise fallback to original
         df_merged['Uraian Satker Final'] = df_merged['Uraian Satker-SINGKAT'].fillna(
             df_merged.get('Uraian Satker', '')
         )
 
-        # Remove merge indicator column
-        df_merged = df_merged.drop(columns=['_merge'])
+        # Drop the reference short-name column (keep final)
+        df_merged = df_merged.drop(columns=['Uraian Satker-SINGKAT'], errors='ignore')
 
         return df_merged
 
     except Exception as e:
-        # More informative error message (include example period)
-        example_period = f"{df['Bulan'].iloc[0]} {df['Tahun'].iloc[0]}" if len(df) > 0 else "unknown"
-        st.error(f"❌ Gagal menerapkan nama singkat untuk periode {example_period}: {e}. Admin agar memastikan seluruh Kode Satker sudah ada di referensi")
-        st.session_state.activity_log.append({
-            "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "Aksi": "apply_reference_short_names exception",
-            "Periode": example_period,
-            "Status": f"❌ {str(e)}"
-        })
-        # Fallback: create 'Uraian Satker Final' from existing 'Uraian Satker'
+        # Minimal error notification and fallback
+        st.error(f"❌ Gagal menerapkan nama singkat untuk periode {df.get('Bulan', [''])[0]} {df.get('Tahun', [''])[0]}: {e}")
         if 'Uraian Satker Final' not in df.columns:
             df['Uraian Satker Final'] = df.get('Uraian Satker', '')
         return df
@@ -1606,7 +1451,18 @@ def page_admin():
                 # Gabungkan atau buat baru
                 if 'reference_df' in st.session_state:
                     old_ref = st.session_state.reference_df.copy()
-                    merged = pd.concat([old_ref, new_ref]).drop_duplicates(subset=['Kode Satker'], keep='last')
+
+                    # 🔹 Normalize old reference too (critical!)
+                    if 'Kode Satker' in old_ref.columns:
+                        old_ref['Kode Satker'] = old_ref['Kode Satker'].apply(normalize_kode_satker)
+
+                    # 🔹 Combine and deduplicate
+                    merged = pd.concat([old_ref, new_ref], ignore_index=True)
+                    merged = merged.drop_duplicates(subset=['Kode Satker'], keep='last')
+
+                    # 🔹 Optional: enforce consistent string stripping
+                    merged['Kode Satker'] = merged['Kode Satker'].astype(str).str.strip()
+
                     st.session_state.reference_df = merged
                     st.success(f"✅ Data Referensi diperbarui ({len(merged)} total baris).")
                 else:
@@ -1675,6 +1531,7 @@ def page_admin():
     # TAB 3: DOWNLOAD DATA
     # ============================================================
     with tab3:
+        # Submenu Download Data IKPA
         st.subheader("📥 Download Data IKPA")
         if not st.session_state.data_storage:
             st.info("ℹ️ Belum ada data.")
@@ -1697,6 +1554,31 @@ def page_admin():
                 file_name=f"IKPA_{period_to_download[0]}_{period_to_download[1]}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
+        # Submenu Download Data Satker Belum Terdaftar
+        st.markdown("---")
+        st.subheader("📥 Download Data Satker Belum Terdaftar di Referensi")
+        st.info(
+            "Mengumpulkan semua file IKPA di folder `data`, mencocokkan kolom 'Kode Satker' "
+            "dengan Template_Data_Referensi.xlsx (data referensi yang dimuat di session). "
+            "Jika ada satker yang TIDAK TERDAFTAR di referensi, akan dibuatkan laporan Excel "
+            "yang berisi: Bulan, Tahun, Kode Satker, Uraian Satker."
+        )
+
+        # Only show action when we have data loaded
+        if not st.session_state.get('data_storage'):
+            st.warning("ℹ️ Tidak ada data bulanan yang dimuat. Silakan unggah/munting data terlebih dahulu.")
+        else:
+            if 'reference_df' not in st.session_state or st.session_state.reference_df is None or st.session_state.reference_df.empty:
+                st.warning("⚠️ Data referensi tidak tersedia. Silakan unggah atau muat Template_Data_Referensi.xlsx terlebih dahulu.")
+            else:
+                if st.button("📥 Generate & Download Satker Belum Terdaftar", type="primary"):
+                    # aggregate_unmatched_satker() already builds the Excel and shows a download button / warning.
+                    # Calling it will generate the same report and display the download UI.
+                    try:
+                        aggregate_unmatched_satker()
+                    except Exception as e:
+                        st.error(f"❌ Gagal membuat laporan: {e}")
 
     # ============================================================
     # TAB 4: DOWNLOAD TEMPLATE (including Reference Template)
