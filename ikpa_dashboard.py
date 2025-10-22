@@ -2,16 +2,18 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
 import io
 import numpy as np
-from pathlib import Path
 import os
 import base64
+import requests
+import re
+import calendar
+from pathlib import Path
+from datetime import datetime
 from github import Github
 from github import Auth
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-
 
 # define month order map
 MONTH_ORDER = {
@@ -19,11 +21,34 @@ MONTH_ORDER = {
     "JULI": 7, "AGUSTUS": 8, "SEPTEMBER": 9, "OKTOBER": 10, 
     "NOVEMBER": 11, "NOPEMBER": 11, "DESEMBER": 12
 }
+
 # Konfigurasi halaman
 st.set_page_config(
     page_title="Dashboard IKPA KPPN Baturaja",
     page_icon="📊",
     layout="wide"
+)
+
+# --- Make tabs more visible ---
+st.markdown(
+    """
+    <style>
+    /* Bigger, bolder tabs */
+    div[data-baseweb="tab"] > button {
+        font-size: 1.1rem !important;      /* increase size */
+        font-weight: 600 !important;       /* make bold */
+        padding: 10px 16px !important;     /* add padding */
+    }
+
+    /* Optional: highlight active tab more strongly */
+    div[data-baseweb="tab"] > button[data-state="active"] {
+        color: #ffffff !important;
+        background-color: #1f77b4 !important;  /* or your theme color */
+        border-radius: 8px 8px 0 0 !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
 # Path ke file template (akan diatur di session state)
@@ -251,23 +276,6 @@ def load_data_from_github():
 
     st.success(f"✅ {len(st.session_state.data_storage)} file berhasil dimuat dari GitHub.")
 
-    # --------------------------------------------------------
-    # Try aggregating unmatched satker (if function exists)
-    # --------------------------------------------------------
-    try:
-        if 'aggregate_unmatched_satker' in globals() and callable(globals()['aggregate_unmatched_satker']):
-            aggregate_unmatched_satker()
-        else:
-            st.info("ℹ️ aggregate_unmatched_satker() not available (skipped).")
-    except Exception as e:
-        st.error(f"⚠️ Terjadi kesalahan saat membuat laporan Satker Tidak Ditemukan: {e}")
-        st.session_state.setdefault("activity_log", []).append({
-            "Waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "Aksi": "aggregate_unmatched_satker error",
-            "Periode": "multiple",
-            "Status": f"❌ {str(e)}"
-        })
-
 # Fungsi untuk membaca template Excel yang sudah ada
 def get_template_file():
     """
@@ -332,152 +340,6 @@ def create_ranking_chart(df, title, top=True, limit=10):
     )
     
     return fig
-
-# Checking 
-def aggregate_unmatched_satker():
-    """
-    Aggregate unmatched 'Kode Satker' from all loaded monthly data.
-    Outputs a Streamlit warning and a download button for an Excel report if there are any missing satkers.
-    The report has:
-      - Sheet 'Summary': count of unmatched rows per Tahun-Bulan (plus total),
-      - Sheet 'Satker Tidak Ditemukan': deduplicated list of missing satkers (Tahun, Bulan, Kode Satker, Uraian Satker).
-    """
-    # Check that we have reference data and loaded data
-    if 'data_storage' not in st.session_state or 'reference_df' not in st.session_state:
-        return
-    ref_df = st.session_state.reference_df
-    if ref_df is None or ref_df.empty:
-        return
-
-    # Prepare reference Kode Satker set (strip and string)
-    ref_codes = set(ref_df['Kode Satker'].astype(str).str.strip())
-
-    # Collect all unmatched rows from each loaded month
-    unmatched_list = []
-    for (month, year), df in st.session_state.data_storage.items():
-        if 'Kode Satker' not in df.columns:
-            continue
-        df_copy = df.copy()
-        # Ensure string type and stripped
-        df_copy['Kode Satker'] = df_copy['Kode Satker'].astype(str).str.strip()
-        # Ensure Tahun/Bulan columns exist
-        df_copy['Tahun'] = df_copy.get('Tahun', year)
-        df_copy['Bulan'] = df_copy.get('Bulan', month)
-        # Filter rows where Kode Satker is not in reference
-        mask = ~df_copy['Kode Satker'].isin(ref_codes)
-        if mask.any():
-            subset = df_copy.loc[mask, ['Tahun', 'Bulan', 'Kode Satker', 'Uraian Satker']]
-            unmatched_list.append(subset)
-
-    # If no unmatched rows at all, do nothing
-    if not unmatched_list:
-        return
-
-    # Combine and deduplicate unmatched rows
-    all_unmatched = pd.concat(unmatched_list, ignore_index=True)
-    all_unmatched = all_unmatched.drop_duplicates()
-
-    # Create summary counts per Tahun-Bulan
-    summary = (
-        all_unmatched
-        .groupby(['Tahun', 'Bulan'], dropna=False)
-        .size()
-        .reset_index(name='Failed Rows')
-    )
-    # Sort by year then month order
-    summary['Month_Num'] = summary['Bulan'].astype(str).str.upper().map(MONTH_ORDER).fillna(0).astype(int)
-    summary = summary.sort_values(['Tahun', 'Month_Num'])
-    summary = summary[['Tahun', 'Bulan', 'Failed Rows']]
-
-    total_failed = len(all_unmatched)
-    total_unique = all_unmatched['Kode Satker'].nunique()
-
-    # Create Excel report in memory
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Detail sheet: unmatched rows
-        all_unmatched.to_excel(writer, sheet_name='Satker Tidak Ditemukan', index=False)
-        # Summary sheet: counts + total
-        totals_row = pd.DataFrame([{'Tahun': '', 'Bulan': 'TOTAL', 'Failed Rows': total_failed}])
-        summary_out = pd.concat([summary, totals_row], ignore_index=True)
-        summary_out.to_excel(writer, sheet_name='Summary', index=False)
-
-        # Apply formatting to both sheets
-        workbook = writer.book
-        detail_ws = writer.sheets['Satker Tidak Ditemukan']
-        summary_ws = writer.sheets['Summary']
-
-        header_fill = PatternFill(start_color='D7E4BD', end_color='D7E4BD', fill_type='solid')
-        header_font = Font(bold=True)
-        border = Border(left=Side(style='thin'), right=Side(style='thin'),
-                        top=Side(style='thin'), bottom=Side(style='thin'))
-        center_align = Alignment(horizontal='center', vertical='center')
-        left_align = Alignment(horizontal='left', vertical='center')
-
-        # Format header row in detail sheet
-        for cell in detail_ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.border = border
-            cell.alignment = center_align
-        # Format data rows in detail sheet
-        for row in detail_ws.iter_rows(min_row=2, max_row=detail_ws.max_row,
-                                       min_col=1, max_col=detail_ws.max_column):
-            for cell in row:
-                cell.border = border
-                cell.alignment = left_align
-        # Set column widths for detail sheet
-        try:
-            detail_ws.column_dimensions['A'].width = 12  # Tahun
-            detail_ws.column_dimensions['B'].width = 15  # Bulan
-            detail_ws.column_dimensions['C'].width = 20  # Kode Satker
-            detail_ws.column_dimensions['D'].width = 50  # Uraian Satker
-        except Exception:
-            pass
-
-        # Format header row in summary sheet
-        for cell in summary_ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.border = border
-            cell.alignment = center_align
-        # Format data rows in summary sheet
-        for row in summary_ws.iter_rows(min_row=2, max_row=summary_ws.max_row,
-                                        min_col=1, max_col=summary_ws.max_column):
-            for cell in row:
-                cell.border = border
-                cell.alignment = left_align
-        # Set column widths for summary sheet
-        try:
-            summary_ws.column_dimensions['A'].width = 12  # Tahun
-            summary_ws.column_dimensions['B'].width = 18  # Bulan
-            summary_ws.column_dimensions['C'].width = 15  # Failed Rows
-        except Exception:
-            pass
-
-    excel_data = output.getvalue()
-
-    # Build warning message listing total and periods affected
-    summary_items = []
-    for _, row in summary.iterrows():
-        bulan = str(row['Bulan'])
-        tahun = str(row['Tahun'])
-        failed = int(row['Failed Rows'])
-        summary_items.append(f"{bulan} {tahun}: {failed} baris")
-    months_summary = "; ".join(summary_items)
-
-    st.warning(
-        f"⚠️ Total **{total_failed}** baris gagal dicocokkan di data bulanan ({total_unique} satker unik tidak ditemukan)."
-        f"\n\n🗓️ Bulan/Tahun dengan baris gagal: {months_summary}."
-        "\n\nMohon agar admin memeriksa dan memperbarui data referensi."
-    )
-    st.download_button(
-        label="📥 Download Satker Tidak Ditemukan (Excel)",
-        data=excel_data,
-        file_name=f"satker_tidak_ditemukan_all_{pd.Timestamp.now():%Y%m%d_%H%M%S}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary"
-    )
 
 # ============================================================
 # 🧩 Improved Problem Chart (with sorting, sliders, and filters)
@@ -654,7 +516,7 @@ def create_satker_column(df):
     )
     return df
     
-# HALAMAN 1: DASHBOARD UTAMA
+# HALAMAN 1: DASHBOARD UTAMA (REVISED)
 def page_dashboard():
     st.title("📊 Dashboard Utama IKPA Satker Mitra KPPN Baturaja")
     
@@ -673,269 +535,262 @@ def page_dashboard():
         st.warning("⚠️ Belum ada data yang tersedia.")
         return
 
-    # Pembatas & Judul
-    st.markdown("---")
-    st.markdown("## 🎯 Highlights Kinerja Satker")
+    # Tabs: Highlights (charts) as default, Data Detail Satker (table)
+    tab_highlights, tab_table = st.tabs(["🎯 Highlights", "📋 Data Detail Satker"])
 
-    # ===============================
-    # 🎯 Periode & Ringkasan Metrik — Single Row Layout
-    # ===============================
-    col_period, col1, col2, col3, col4 = st.columns([1, 1, 1, 1, 1])
+    # -------------------------
+    # Common: period selection and metrics (keep at top of Highlights)
+    # -------------------------
+    with tab_highlights:
+        st.markdown("---")
+        st.markdown("# 🎯 Highlights Kinerja Satker")
 
-    # 📅 Period selection (takes more width)
-    with col_period:
-        selected_period = st.selectbox(
-            "Pilih Periode",
-            options=all_periods,
-            index=0,
-            format_func=lambda x: f"{x[0].capitalize()} {x[1]}"
-        )
+        # Single-row layout for period + metrics
+        col_period, col1, col2, col3, col4 = st.columns([1, 1, 1, 1, 1])
 
-    df = st.session_state.data_storage[selected_period]
-
-    # 📊 Compact summary metrics
-    with col1:
-        st.metric("📋 Total Satker", len(df))
-    with col2:
-        avg_score = df['Nilai Akhir (Nilai Total/Konversi Bobot)'].mean()
-        st.metric("📈 Rata-rata Nilai", f"{avg_score:.2f}")
-    with col3:
-        perfect_count = len(df[df['Nilai Akhir (Nilai Total/Konversi Bobot)'] == 100])
-        st.metric("⭐ Nilai 100", perfect_count)
-    with col4:
-        below_89 = len(df[df['Nilai Akhir (Nilai Total/Konversi Bobot)'] < 89])
-        st.metric("⚠️ Nilai < 89 (Predikat Belum Baik)", below_89)
-    
-    # ===============================
-    # 📊 Ranking Charts — Compact Horizontal Strip (4 in 1)
-    # ===============================
-
-    # 🎚️ User control for Y-axis range
-    st.markdown("###### Atur Skala Nilai (Sumbu Y)")
-
-    col_min, col_max = st.columns(2)
-    with col_min:
-        y_min = st.slider(
-            "Nilai Minimum (Y-Axis)",
-            min_value=0,
-            max_value=50,
-            value=50,  # Default to start from 50
-            step=1,
-        )
-    with col_max:
-        y_max = st.slider(
-            "Nilai Maksimum (Y-Axis)",
-            min_value=51,
-            max_value=110,
-            value=110,
-            step=1,
-        )
-
-    # ===============================
-    # Data preparation
-    # ===============================
-    df_with_kontrak = df[df['Belanja Kontraktual'] != 0]
-    df_without_kontrak = df[df['Belanja Kontraktual'] == 0]
-
-    # ===============================
-    # Chart creator helper
-    # ===============================
-    def make_column_chart(data, title, color_scale, y_min, y_max, limit=10, show_yaxis=False):
-        """Creates a compact vertical bar (column) chart with consistent style"""
-        fig = px.bar(
-            data.nlargest(limit, 'Nilai Akhir (Nilai Total/Konversi Bobot)'),
-            x='Satker',
-            y='Nilai Akhir (Nilai Total/Konversi Bobot)',
-            color='Nilai Akhir (Nilai Total/Konversi Bobot)',
-            color_continuous_scale=color_scale,
-            title=title,
-        )
-        fig.update_layout(
-            yaxis_range=[y_min, y_max],
-            xaxis_tickangle=90,  # 🔹 Rotate labels vertically
-            height=500,
-            margin=dict(l=10, r=10, t=40, b=80),
-            coloraxis_showscale=False,
-            showlegend=False,
-        )
-
-        # 🔹 Optional Y-axis display
-        if show_yaxis:
-            fig.update_yaxes(title_text="Nilai IKPA", showticklabels=True)
-        else:
-            fig.update_yaxes(title_text="", showticklabels=False)
-
-        # 🔹 Remove "Satker" label from X-axis
-        fig.update_xaxes(title_text="")
-
-        fig.update_traces(
-            texttemplate='%{y:.1f}',
-            textposition='outside',
-            hovertemplate='<b>%{x}</b><br>Nilai: %{y:.2f}<extra></extra>'
-        )
-
-        return fig
-
-    # ===============================
-    # 4 charts side by side (4x1 layout)
-    # ===============================
-    col1, col2, col3, col4 = st.columns(4)
-
-    # 1️⃣ Top 10 with kontraktual
-    with col1:
-        st.markdown("##### 🏆 10 Satker Terbaik (Dengan Kontraktual)")
-        if len(df_with_kontrak) > 0:
-            top_with = df_with_kontrak.nlargest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
-            fig1 = make_column_chart(top_with, "", "greens", y_min, y_max, show_yaxis=True)
-            st.plotly_chart(fig1, use_container_width=True)
-        else:
-            st.info("Tidak ada data.")
-
-    # 2️⃣ Top 10 without kontraktual
-    with col2:
-        st.markdown("##### 🏆 10 Satker Terbaik (Tanpa Kontraktual)")
-        if len(df_without_kontrak) > 0:
-            top_without = df_without_kontrak.nlargest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
-            fig2 = make_column_chart(top_without, "", "greens", y_min, y_max, show_yaxis=False)
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("Tidak ada data.")
-
-    # 3️⃣ Bottom 10 with kontraktual
-    with col3:
-        st.markdown("##### 📉 10 Satker Terendah (Dengan Kontraktual)")
-        if len(df_with_kontrak) > 0:
-            bottom_with = df_with_kontrak.nsmallest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
-            fig3 = make_column_chart(bottom_with, "", "orrd_r", y_min, y_max, show_yaxis=False)
-            st.plotly_chart(fig3, use_container_width=True)
-        else:
-            st.info("Tidak ada data.")
-
-    # 4️⃣ Bottom 10 without kontraktual
-    with col4:
-        st.markdown("##### 📉 10 Satker Terendah (Tanpa Kontraktual)")
-        if len(df_without_kontrak) > 0:
-            bottom_without = df_without_kontrak.nsmallest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
-            fig4 = make_column_chart(bottom_without, "", "orrd_r", y_min, y_max, show_yaxis=False)
-            st.plotly_chart(fig4, use_container_width=True)
-        else:
-            st.info("Tidak ada data.")
-
-    st.markdown("---")
-    
-    # Satker dengan masalah
-    st.subheader("🚨 Satker yang Memerlukan Perhatian Khusus")
-
-    # 🎚️ Pengaturan Sumbu Y
-    st.markdown("###### Atur Skala Nilai (Sumbu Y)")
-    col_min, col_max = st.columns(2)
-    with col_min:
-        y_min_dev = st.slider(
-            "Nilai Minimum (Y-Axis)",
-            min_value=0,
-            max_value=50,
-            value=40,
-            step=1,
-            key="ymin_dev"
-        )
-    with col_max:
-        y_max_dev = st.slider(
-            "Nilai Maksimum (Y-Axis)",
-            min_value=51,
-            max_value=110,
-            value=110,
-            step=1,
-            key="ymax_dev"
-        )
-
-    # Deviasi Hal 3 DIPA
-    fig_dev = create_problem_chart(
-        df, 
-        'Deviasi Halaman III DIPA', 
-        90, 
-        "Deviasi Hal 3 DIPA Belum Optimal (< 90)",
-        'less',
-        y_min=y_min_dev,
-        y_max=y_max_dev,
-        show_yaxis=True
-    )
-    if fig_dev:
-        st.plotly_chart(fig_dev, use_container_width=True)
-    else:
-        st.success("✅ Semua satker sudah optimal untuk Deviasi Hal 3 DIPA")
-    
-    st.markdown("---")
-    
-    # Tabel detail
-    st.subheader("📋 Tabel Detail Satker")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        view_mode = st.radio(
-            "Tampilan",
-            options=['aspek', 'komponen'],
-            format_func=lambda x: 'Berdasarkan Aspek' if x == 'aspek' else 'Berdasarkan Komponen',
-            horizontal=True
-        )
-    
-    with col2:
-        if view_mode == 'komponen':
-            value_type = st.selectbox(
-                "Jenis Nilai",
-                options=['Nilai', 'Bobot', 'Nilai Terbobot']
+        with col_period:
+            selected_period = st.selectbox(
+                "Pilih Periode",
+                options=all_periods,
+                index=0,
+                format_func=lambda x: f"{x[0].capitalize()} {x[1]}"
             )
-    
-    # Kolom yang ditampilkan
-    display_columns = ['Peringkat', 'Kode BA', 'Kode Satker', 'Uraian Satker']
-    
-    if view_mode == 'aspek':
-        display_columns += [
-            'Kualitas Perencanaan Anggaran',
-            'Kualitas Pelaksanaan Anggaran',
-            'Kualitas Hasil Pelaksanaan Anggaran'
-        ]
-        df_display = df[display_columns + ['Nilai Total', 'Konversi Bobot', 
-                                            'Dispensasi SPM (Pengurang)', 
-                                            'Nilai Akhir (Nilai Total/Konversi Bobot)']].copy()
-    else:
-        component_cols = [
-            'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran',
-            'Belanja Kontraktual', 'Penyelesaian Tagihan', 
-            'Pengelolaan UP dan TUP', 'Capaian Output'
-        ]
-        
-        df_display = df[display_columns + ['Nilai Total', 'Konversi Bobot', 
-                                            'Dispensasi SPM (Pengurang)', 
-                                            'Nilai Akhir (Nilai Total/Konversi Bobot)']].copy()
-        
-        if value_type == 'Nilai':
+
+        df = st.session_state.data_storage[selected_period]
+
+        with col1:
+            st.metric("📋 Total Satker", len(df))
+        with col2:
+            avg_score = df['Nilai Akhir (Nilai Total/Konversi Bobot)'].mean()
+            st.metric("📈 Rata-rata Nilai", f"{avg_score:.2f}")
+        with col3:
+            perfect_count = len(df[df['Nilai Akhir (Nilai Total/Konversi Bobot)'] == 100])
+            st.metric("⭐ Nilai 100", perfect_count)
+        with col4:
+            below_89 = len(df[df['Nilai Akhir (Nilai Total/Konversi Bobot)'] < 89])
+            st.metric("⚠️ Nilai < 89 (Predikat Belum Baik)", below_89)
+
+        # ===============================
+        # Chart controls
+        # ===============================
+        st.markdown("###### Atur Skala Nilai (Sumbu Y)")
+        col_min, col_max = st.columns(2)
+        with col_min:
+            y_min = st.slider(
+                "Nilai Minimum (Y-Axis)",
+                min_value=0,
+                max_value=50,
+                value=50,  # Default to start from 50
+                step=1,
+                key="high_ymin"
+            )
+        with col_max:
+            y_max = st.slider(
+                "Nilai Maksimum (Y-Axis)",
+                min_value=51,
+                max_value=110,
+                value=110,
+                step=1,
+                key="high_ymax"
+            )
+
+        # ===============================
+        # Data preparation for charts
+        # ===============================
+        df_with_kontrak = df[df['Belanja Kontraktual'] != 0]
+        df_without_kontrak = df[df['Belanja Kontraktual'] == 0]
+
+        # chart helper unchanged
+        def make_column_chart(data, title, color_scale, y_min, y_max, limit=10, show_yaxis=False):
+            fig = px.bar(
+                data.nlargest(limit, 'Nilai Akhir (Nilai Total/Konversi Bobot)'),
+                x='Satker',
+                y='Nilai Akhir (Nilai Total/Konversi Bobot)',
+                color='Nilai Akhir (Nilai Total/Konversi Bobot)',
+                color_continuous_scale=color_scale,
+                title=title,
+            )
+            fig.update_layout(
+                yaxis_range=[y_min, y_max],
+                xaxis_tickangle=90,
+                height=500,
+                margin=dict(l=10, r=10, t=40, b=80),
+                coloraxis_showscale=False,
+                showlegend=False,
+            )
+            if show_yaxis:
+                fig.update_yaxes(title_text="Nilai IKPA", showticklabels=True)
+            else:
+                fig.update_yaxes(title_text="", showticklabels=False)
+            fig.update_xaxes(title_text="")
+            fig.update_traces(
+                texttemplate='%{y:.1f}',
+                textposition='outside',
+                hovertemplate='<b>%{x}</b><br>Nilai: %{y:.2f}<extra></extra>'
+            )
+            return fig
+
+        # 4 charts side-by-side
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.markdown("##### 🏆 10 Satker Terbaik (Dengan Kontraktual)")
+            if len(df_with_kontrak) > 0:
+                top_with = df_with_kontrak.nlargest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
+                fig1 = make_column_chart(top_with, "", "greens", y_min, y_max, show_yaxis=True)
+                st.plotly_chart(fig1, use_container_width=True)
+            else:
+                st.info("Tidak ada data.")
+
+        with col2:
+            st.markdown("##### 🏆 10 Satker Terbaik (Tanpa Kontraktual)")
+            if len(df_without_kontrak) > 0:
+                top_without = df_without_kontrak.nlargest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
+                fig2 = make_column_chart(top_without, "", "greens", y_min, y_max, show_yaxis=False)
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info("Tidak ada data.")
+
+        with col3:
+            st.markdown("##### 📉 10 Satker Terendah (Dengan Kontraktual)")
+            if len(df_with_kontrak) > 0:
+                bottom_with = df_with_kontrak.nsmallest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
+                fig3 = make_column_chart(bottom_with, "", "orrd_r", y_min, y_max, show_yaxis=False)
+                st.plotly_chart(fig3, use_container_width=True)
+            else:
+                st.info("Tidak ada data.")
+
+        with col4:
+            st.markdown("##### 📉 10 Satker Terendah (Tanpa Kontraktual)")
+            if len(df_without_kontrak) > 0:
+                bottom_without = df_without_kontrak.nsmallest(10, 'Nilai Akhir (Nilai Total/Konversi Bobot)')
+                fig4 = make_column_chart(bottom_without, "", "orrd_r", y_min, y_max, show_yaxis=False)
+                st.plotly_chart(fig4, use_container_width=True)
+            else:
+                st.info("Tidak ada data.")
+
+        st.markdown("---")
+
+        # Satker dengan masalah (Deviasi Hal 3 DIPA)
+        st.subheader("🚨 Satker yang Memerlukan Perhatian Khusus")
+        st.markdown("###### Atur Skala Nilai (Sumbu Y)")
+        col_min_dev, col_max_dev = st.columns(2)
+        with col_min_dev:
+            y_min_dev = st.slider(
+                "Nilai Minimum (Y-Axis)",
+                min_value=0,
+                max_value=50,
+                value=40,
+                step=1,
+                key="high_ymin_dev"
+            )
+        with col_max_dev:
+            y_max_dev = st.slider(
+                "Nilai Maksimum (Y-Axis)",
+                min_value=51,
+                max_value=110,
+                value=110,
+                step=1,
+                key="high_ymax_dev"
+            )
+
+        fig_dev = create_problem_chart(
+            df, 
+            'Deviasi Halaman III DIPA', 
+            90, 
+            "Deviasi Hal 3 DIPA Belum Optimal (< 90)",
+            'less',
+            y_min=y_min_dev,
+            y_max=y_max_dev,
+            show_yaxis=True
+        )
+        if fig_dev:
+            st.plotly_chart(fig_dev, use_container_width=True)
+        else:
+            st.success("✅ Semua satker sudah optimal untuk Deviasi Hal 3 DIPA")
+
+    # -------------------------
+    # Table tab
+    # -------------------------
+    with tab_table:
+        st.markdown("---")
+        st.subheader("📋 Tabel Detail Satker")
+
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            view_mode = st.radio(
+                "Tampilan",
+                options=['aspek', 'komponen'],
+                format_func=lambda x: 'Berdasarkan Aspek' if x == 'aspek' else 'Berdasarkan Komponen',
+                horizontal=True
+            )
+
+        # NOTE: removed Bobot / Nilai Terbobot selector — only 'Nilai' is available
+        # (so komponen view will always show the numeric 'Nilai' columns)
+        # with col2 we can put other controls later if needed
+        with col2:
+            st.write("")  # placeholder to keep alignment
+
+        # Kolom yang ditampilkan (Konversi Bobot removed)
+        display_columns = ['Peringkat', 'Kode BA', 'Kode Satker', 'Uraian Satker']
+
+        if view_mode == 'aspek':
+            display_columns += [
+                'Kualitas Perencanaan Anggaran',
+                'Kualitas Pelaksanaan Anggaran',
+                'Kualitas Hasil Pelaksanaan Anggaran'
+            ]
+            # Konversi Bobot removed from displayed columns
+            df_display = df[display_columns + ['Nilai Total',
+                                               'Dispensasi SPM (Pengurang)',
+                                               'Nilai Akhir (Nilai Total/Konversi Bobot)']].copy()
+        else:
+            # Komponen view: always show actual "Nilai" (no Bobot / Nilai Terbobot switch)
+            component_cols = [
+                'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran',
+                'Belanja Kontraktual', 'Penyelesaian Tagihan', 
+                'Pengelolaan UP dan TUP', 'Capaian Output'
+            ]
+
+            df_display = df[display_columns + ['Nilai Total',
+                                               'Dispensasi SPM (Pengurang)',
+                                               'Nilai Akhir (Nilai Total/Konversi Bobot)']].copy()
+
+            # fill component values directly from df (Nilai)
             for col in component_cols:
-                df_display[col] = df[col]
-        elif value_type == 'Bobot':
-            for col in component_cols:
-                df_display[col] = df['Bobot'].apply(lambda x: x.get(col, 0) if isinstance(x, dict) else 0)
-        else:  # Nilai Terbobot
-            for col in component_cols:
-                df_display[col] = df['Nilai Terbobot'].apply(lambda x: x.get(col, 0) if isinstance(x, dict) else 0)
-        
-        # Reorder kolom
-        final_cols = display_columns + component_cols + ['Nilai Total', 'Konversi Bobot', 
-                                                          'Dispensasi SPM (Pengurang)', 
-                                                          'Nilai Akhir (Nilai Total/Konversi Bobot)']
-        df_display = df_display[final_cols]
-    
-    # Styling untuk tabel
-    def highlight_top(s):
-        if s.name == 'Peringkat':
-            return ['background-color: gold' if v <= 3 else '' for v in s]
-        return ['' for _ in s]
-    
-    st.dataframe(
-        df_display.style.apply(highlight_top).format(precision=2),
-        use_container_width=True,
-        height=600
-    )
+                df_display[col] = df.get(col, 0)
+
+            # Reorder columns (Konversi Bobot removed)
+            final_cols = display_columns + component_cols + ['Nilai Total',
+                                                             'Dispensasi SPM (Pengurang)',
+                                                             'Nilai Akhir (Nilai Total/Konversi Bobot)']
+            df_display = df_display[final_cols]
+
+        # -------------------------
+        # Search widget: filter across all columns (case-insensitive substring)
+        # -------------------------
+        search_query = st.text_input("🔎 Cari (ketik untuk filter di semua kolom)", value="", help="Cari teks pada semua kolom (case-insensitive).")
+        if search_query:
+            q = str(search_query).strip().lower()
+            # Build mask: any column contains q as substring
+            mask = df_display.apply(lambda row: row.astype(str).str.lower().str.contains(q, na=False).any(), axis=1)
+            df_display_filtered = df_display[mask].copy()
+        else:
+            df_display_filtered = df_display.copy()
+
+        # Styling untuk tabel (same highlight_top)
+        def highlight_top(s):
+            if s.name == 'Peringkat':
+                return ['background-color: gold' if (pd.to_numeric(v, errors='coerce') <= 3) else '' for v in s]
+            return ['' for _ in s]
+
+        # Render table
+        st.dataframe(
+            df_display_filtered.style.apply(highlight_top).format(precision=2),
+            use_container_width=True,
+            height=600
+        )
 
 # HALAMAN 2: DASHBOARD INTERNAL KPPN (Protected)
 def page_trend():
@@ -1555,30 +1410,306 @@ def page_admin():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-        # Submenu Download Data Satker Belum Terdaftar
+        # --- Submenu: Download Data Satker yang Belum Terdaftar di Tabel Referensi ---
         st.markdown("---")
-        st.subheader("📥 Download Data Satker Belum Terdaftar di Referensi")
-        st.info(
-            "Mengumpulkan semua file IKPA di folder `data`, mencocokkan kolom 'Kode Satker' "
-            "dengan Template_Data_Referensi.xlsx (data referensi yang dimuat di session). "
-            "Jika ada satker yang TIDAK TERDAFTAR di referensi, akan dibuatkan laporan Excel "
-            "yang berisi: Bulan, Tahun, Kode Satker, Uraian Satker."
-        )
+        st.subheader("📥 Download Data Satker yang Belum Terdaftar di Tabel Referensi")
 
-        # Only show action when we have data loaded
-        if not st.session_state.get('data_storage'):
-            st.warning("ℹ️ Tidak ada data bulanan yang dimuat. Silakan unggah/munting data terlebih dahulu.")
-        else:
-            if 'reference_df' not in st.session_state or st.session_state.reference_df is None or st.session_state.reference_df.empty:
-                st.warning("⚠️ Data referensi tidak tersedia. Silakan unggah atau muat Template_Data_Referensi.xlsx terlebih dahulu.")
+        # --- Helpers for GitHub fallback (minimal) ---
+        GITHUB_REPO = st.secrets.get("GITHUB_REPO") if hasattr(st, "secrets") else None
+        GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN") if hasattr(st, "secrets") else None
+
+        def github_api_list_dir(repo, path, token=None):
+            api = f"https://api.github.com/repos/{repo}/contents/{path}"
+            headers = {"Authorization": f"token {token}"} if token else {}
+            r = requests.get(api, headers=headers, timeout=30)
+            r.raise_for_status()
+            return r.json()
+
+        def github_download_file_bytes(repo, path, token=None):
+            api = f"https://api.github.com/repos/{repo}/contents/{path}"
+            headers = {"Authorization": f"token {token}"} if token else {}
+            r = requests.get(api, headers=headers, timeout=30)
+            r.raise_for_status()
+            j = r.json()
+            if j.get("encoding") == "base64" and "content" in j:
+                return base64.b64decode(j["content"])
+            # fallback to raw URL
+            raw = f"https://raw.githubusercontent.com/{repo}/HEAD/{path}"
+            r2 = requests.get(raw, headers=headers, timeout=30)
+            r2.raise_for_status()
+            return r2.content
+
+        def infer_tahun_bulan_from_filename(filename):
+            # try to get year (20xx)
+            year_match = re.search(r'(20\d{2})', filename)
+            year = year_match.group(1) if year_match else ''
+            # try month name
+            found_month = ''
+            for m in range(1, 13):
+                short = calendar.month_name[m][:3].lower()
+                if short in filename.lower():
+                    found_month = calendar.month_name[m]
+                    break
+            return year, found_month
+
+        # Action
+        if st.button("📥 Generate & Download Rows dengan Uraian Satker-SINGKAT Kosong (Verbose)"):
+            log_lines = []
+            log_placeholder = st.empty()
+            progress = st.progress(0)
+            processed = 0
+            found_list = []
+
+            # Choose source: session state first
+            data_storage = st.session_state.get('data_storage')
+            use_session = bool(data_storage)
+
+            if use_session:
+                log_lines.append("📦 Menggunakan data dari st.session_state['data_storage']...")
+                files_iter = []
+                # data_storage keys expected as (month, year) -> df
+                # convert to list of tuples (label, df)
+                for key, df in data_storage.items():
+                    # create a readable file label
+                    if isinstance(key, (list, tuple)) and len(key) == 2:
+                        month, year = key
+                        label = f"{month}_{year}"
+                    else:
+                        label = str(key)
+                    files_iter.append((label, df))
             else:
-                if st.button("📥 Generate & Download Satker Belum Terdaftar", type="primary"):
-                    # aggregate_unmatched_satker() already builds the Excel and shows a download button / warning.
-                    # Calling it will generate the same report and display the download UI.
+                # fallback to GitHub listing
+                if not GITHUB_REPO:
+                    st.error("❌ Tidak ada st.session_state['data_storage'] dan st.secrets['GITHUB_REPO'] tidak diset. Tidak bisa mengambil file.")
+                    st.stop()
+                try:
+                    contents = github_api_list_dir(GITHUB_REPO, "data", GITHUB_TOKEN)
+                except Exception as e:
+                    st.error(f"❌ Gagal mengambil daftar file dari repo (folder `data`): {e}")
+                    st.stop()
+                # keep only xlsx/xls/csv
+                file_items = [it for it in contents if it.get('type') == 'file' and it.get('name','').lower().endswith(('.xlsx','.xls','.csv'))]
+                if not file_items:
+                    st.warning("⚠️ Tidak ditemukan file .xlsx/.xls/.csv di folder `data` pada repo.")
+                    st.stop()
+                files_iter = []
+                for it in file_items:
+                    name = it.get('name')
+                    path = it.get('path')
+                    # we'll download bytes during processing
+                    files_iter.append((name, path))
+
+            total_files = len(files_iter)
+            log_lines.append(f"🔎 Ditemukan {total_files} file untuk diproses.")
+            log_placeholder.markdown("\n".join(log_lines))
+
+            # iterate files
+            for idx, (label, source) in enumerate(files_iter, start=1):
+                processed += 1
+                progress.progress(int((processed-1)/total_files * 100))
+
+                # human-friendly filename for logs
+                filename = label if isinstance(label, str) else str(label)
+                log_lines.append(f"\n• Memproses file: **{filename}** ...")
+                log_placeholder.markdown("\n".join(log_lines))
+
+                # obtain dataframe
+                df = None
+                read_error = None
+                if use_session:
+                    df = source  # in session mode, source is already the DataFrame
+                    # if the session stored some metadata with filename, optionally use that:
+                    # but we proceed with label as filename.
+                else:
+                    # download bytes from repo path
                     try:
-                        aggregate_unmatched_satker()
+                        bytes_data = github_download_file_bytes(GITHUB_REPO, source, GITHUB_TOKEN)
                     except Exception as e:
-                        st.error(f"❌ Gagal membuat laporan: {e}")
+                        read_error = f"Gagal mengunduh {filename}: {e}"
+                        log_lines.append(f"  ❌ {read_error}")
+                        log_placeholder.markdown("\n".join(log_lines))
+                        continue
+
+                    # read into dataframe (try .xlsx -> .csv)
+                    try:
+                        if filename.lower().endswith(('.xlsx', '.xls')):
+                            df = pd.read_excel(io.BytesIO(bytes_data), dtype=str)
+                        else:
+                            # csv: try default then fallback to latin-1 if error
+                            try:
+                                df = pd.read_csv(io.BytesIO(bytes_data), dtype=str)
+                            except Exception:
+                                df = pd.read_csv(io.BytesIO(bytes_data), dtype=str, encoding='latin-1')
+                    except Exception as e:
+                        read_error = f"Gagal membaca {filename} ke DataFrame: {e}"
+                        log_lines.append(f"  ❌ {read_error}")
+                        log_placeholder.markdown("\n".join(log_lines))
+                        continue
+
+                # if not a DataFrame, skip
+                if not isinstance(df, pd.DataFrame):
+                    log_lines.append(f"  ❌ File {filename} tidak menghasilkan DataFrame. Dilewati.")
+                    log_placeholder.markdown("\n".join(log_lines))
+                    continue
+
+                # show detected columns for debugging
+                cols = df.columns.tolist()
+                log_lines.append(f"  ℹ️ Kolom: {', '.join(cols)}")
+                log_placeholder.markdown("\n".join(log_lines))
+
+                # Ensure column exists: 'Uraian Satker-SINGKAT'
+                uraian_col = None
+                if 'Uraian Satker-SINGKAT' in df.columns:
+                    uraian_col = 'Uraian Satker-SINGKAT'
+                else:
+                    # attempt to find best candidate
+                    candidates = [c for c in df.columns if 'uraian' in c.lower() and ('satker' in c.lower() or 'singkat' in c.lower() or 'nama' in c.lower())]
+                    if candidates:
+                        uraian_col = candidates[0]
+                        log_lines.append(f"  ℹ️ Menganggap kolom '{uraian_col}' sebagai 'Uraian Satker-SINGKAT'.")
+                        log_placeholder.markdown("\n".join(log_lines))
+                    else:
+                        # no appropriate column — still continue (we can treat as all empty)
+                        log_lines.append(f"  ⚠️ Tidak menemukan kolom 'Uraian Satker-SINGKAT' atau kandidat yang jelas pada {filename}. Menganggap semua uraian singkat sebagai kosong.")
+                        log_placeholder.markdown("\n".join(log_lines))
+                        uraian_col = None
+
+                # Detect a full description 'Uraian Satker' column (prefer column with 'uraian' but not 'singkat')
+                uraian_full_col = None
+                full_candidates = [c for c in df.columns if 'uraian' in c.lower() and 'singkat' not in c.lower()]
+                if full_candidates:
+                    # pick first candidate that is not the same as uraian_col (if possible)
+                    for c in full_candidates:
+                        if uraian_col and c.lower() == uraian_col.lower():
+                            continue
+                        uraian_full_col = c
+                        break
+                    if uraian_full_col is None and full_candidates:
+                        uraian_full_col = full_candidates[0]
+                    if uraian_full_col:
+                        log_lines.append(f"  ℹ️ Menganggap kolom '{uraian_full_col}' sebagai 'Uraian Satker' (deskripsi penuh).")
+                        log_placeholder.markdown("\n".join(log_lines))
+                else:
+                    # no full uraian column found; we will create an empty 'Uraian Satker' later
+                    log_lines.append(f"  ℹ️ Tidak menemukan kolom 'Uraian Satker' terpisah; akan membuat kolom kosong jika diperlukan.")
+                    log_placeholder.markdown("\n".join(log_lines))
+
+                # Prepare key columns: Kode Satker, Tahun, Bulan
+                # Try common names for Kode Satker
+                kode_candidates = [c for c in df.columns if 'kode' in c.lower() and 'satker' in c.lower()]
+                if kode_candidates:
+                    kode_col = kode_candidates[0]
+                    if kode_col != 'Kode Satker':
+                        log_lines.append(f"  ℹ️ Menganggap kolom '{kode_col}' sebagai 'Kode Satker'.")
+                        log_placeholder.markdown("\n".join(log_lines))
+                else:
+                    # fallback to any column with numeric-like values and short names
+                    kode_col = None
+                    for c in df.columns:
+                        if c.lower().strip() in ('kode','kd','kdsatker','kodesatker'):
+                            kode_col = c
+                            break
+                    if kode_col is None:
+                        # as last resort, look for first column that seems numeric-ish
+                        for c in df.columns:
+                            sample = df[c].dropna().astype(str).head(5).tolist()
+                            if sample and all(re.fullmatch(r'\d+', s.strip()) for s in sample):
+                                kode_col = c
+                                break
+                    if kode_col:
+                        log_lines.append(f"  ℹ️ Menggunakan kolom '{kode_col}' sebagai 'Kode Satker' (fallback).")
+                        log_placeholder.markdown("\n".join(log_lines))
+                    else:
+                        log_lines.append(f"  ⚠️ Tidak menemukan kolom 'Kode Satker' pada {filename}. File dilewati.")
+                        log_placeholder.markdown("\n".join(log_lines))
+                        continue
+
+                # Normalize kode and uraian columns
+                df_copy = df.copy()
+                df_copy[kode_col] = df_copy[kode_col].astype(str).fillna('').str.strip()
+                if uraian_col:
+                    df_copy[uraian_col] = df_copy[uraian_col].astype(str).fillna('').str.strip()
+                else:
+                    # create empty column to mark empty uraian singkat
+                    uraian_col = 'Uraian Satker-SINGKAT'
+                    df_copy[uraian_col] = ''
+
+                if uraian_full_col:
+                    df_copy[uraian_full_col] = df_copy[uraian_full_col].astype(str).fillna('').str.strip()
+                else:
+                    # create empty full uraian column
+                    uraian_full_col = 'Uraian Satker'
+                    df_copy[uraian_full_col] = ''
+
+                # Ensure Tahun/Bulan exist or infer from filename
+                if 'Tahun' not in df_copy.columns:
+                    year, _ = infer_tahun_bulan_from_filename(filename)
+                    df_copy['Tahun'] = df_copy.get('Tahun', year)
+                if 'Bulan' not in df_copy.columns:
+                    _, month_name = infer_tahun_bulan_from_filename(filename)
+                    df_copy['Bulan'] = df_copy.get('Bulan', month_name if month_name else '')
+
+                # Identify rows where Uraian Satker-SINGKAT is empty (after strip)
+                mask_empty_uraian = df_copy[uraian_col].astype(str).str.strip().replace('nan','').isin(['', None])
+                empty_count = int(mask_empty_uraian.sum())
+
+                if empty_count == 0:
+                    log_lines.append(f"  ✅ Tidak ada baris dengan Uraian Satker-SINGKAT kosong pada {filename}.")
+                    log_placeholder.markdown("\n".join(log_lines))
+                else:
+                    # select columns and attach source filename
+                    # include both Uraian Satker-SINGKAT and Uraian Satker (full)
+                    subset = df_copy.loc[mask_empty_uraian, ['Tahun', 'Bulan', kode_col, uraian_col, uraian_full_col]].copy()
+                    subset = subset.rename(columns={
+                        kode_col: 'Kode Satker',
+                        uraian_col: 'Uraian Satker-SINGKAT',
+                        uraian_full_col: 'Uraian Satker'
+                    })
+                    subset['Source File'] = filename
+                    found_list.append(subset)
+                    unique_codes = int(subset['Kode Satker'].nunique())
+                    log_lines.append(f"  ⚠️ Menemukan **{empty_count}** baris dengan Uraian Satker-SINGKAT kosong pada {filename} (unik {unique_codes} kode).")
+                    log_placeholder.markdown("\n".join(log_lines))
+
+            # finalize
+            progress.progress(100)
+            log_lines.append("\n🔚 Pemeriksaan selesai.")
+            log_placeholder.markdown("\n".join(log_lines))
+
+            if not found_list:
+                st.success("✅ Tidak ditemukan baris dengan Uraian Satker-SINGKAT kosong di semua file yang diproses.")
+                st.session_state['last_empty_uraian_report'] = None
+            else:
+                all_empty = pd.concat(found_list, ignore_index=True).drop_duplicates()
+                # ensure columns order
+                cols_wanted = ['Tahun', 'Bulan', 'Kode Satker', 'Uraian Satker-SINGKAT', 'Uraian Satker', 'Source File']
+                for c in cols_wanted:
+                    if c not in all_empty.columns:
+                        all_empty[c] = ''
+                all_empty = all_empty[cols_wanted]
+
+                total_rows = len(all_empty)
+                total_unique = int(all_empty['Kode Satker'].nunique())
+                st.warning(f"⚠️ Total {total_rows} baris ditemukan dengan Uraian Satker-SINGKAT kosong ({total_unique} satker unik).")
+
+                # Build Excel to download
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    all_empty.to_excel(writer, sheet_name='Uraian_Kosong', index=False)
+                output.seek(0)
+                excel_bytes = output.getvalue()
+                st.session_state['last_empty_uraian_report'] = excel_bytes
+
+                fname = f"uraian_satker_singkat_kosong_{pd.Timestamp.now():%Y%m%d_%H%M%S}.xlsx"
+                st.download_button(
+                    label="📥 Download Laporan Uraian Satker-SINGKAT Kosong",
+                    data=excel_bytes,
+                    file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+            # final flush of logs
+            log_placeholder.markdown("\n".join(log_lines))
 
     # ============================================================
     # TAB 4: DOWNLOAD TEMPLATE (including Reference Template)
