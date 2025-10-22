@@ -403,7 +403,7 @@ def create_problem_chart(df, column, threshold, title, comparison='less', y_min=
 def apply_reference_short_names(df):
     """
     Simple version: apply reference short names to dataframe.
-    - Adds 'Uraian Satker Final' (from reference 'Uraian Satker-SINGKAT' when available,
+    - Adds 'Uraian Satker-RINGKAS' (from reference 'Uraian Satker-SINGKAT' when available,
       otherwise falls back to original 'Uraian Satker').
     - Performs basic normalization on 'Kode Satker' before merging.
     - Minimal user messages (no Excel/CSV creation, no verbose debugging).
@@ -419,8 +419,10 @@ def apply_reference_short_names(df):
 
     # If no reference in session, fallback silently to original names
     if 'reference_df' not in st.session_state or st.session_state.reference_df is None:
-        if 'Uraian Satker Final' not in df.columns:
-            df['Uraian Satker Final'] = df.get('Uraian Satker', '')
+        if 'Uraian Satker-RINGKAS' not in df.columns:
+            df['Uraian Satker-RINGKAS'] = df.get('Uraian Satker', '')
+        # also keep a final fallback column for compatibility
+        df['Uraian Satker Final'] = df.get('Uraian Satker', '')
         return df
 
     # Copy reference
@@ -436,8 +438,9 @@ def apply_reference_short_names(df):
         ref['Kode Satker'] = ref['Kode Satker'].apply(normalize_kode_satker)
     else:
         # If reference has no Kode Satker, cannot match — fallback
-        if 'Uraian Satker Final' not in df.columns:
-            df['Uraian Satker Final'] = df.get('Uraian Satker', '')
+        if 'Uraian Satker-RINGKAS' not in df.columns:
+            df['Uraian Satker-RINGKAS'] = df.get('Uraian Satker', '')
+        df['Uraian Satker Final'] = df.get('Uraian Satker', '')
         return df
 
     # Ensure kode fields are strings and stripped
@@ -446,25 +449,29 @@ def apply_reference_short_names(df):
 
     # If the reference does not contain the expected short-name column, fallback
     if 'Uraian Satker-SINGKAT' not in ref.columns:
-        if 'Uraian Satker Final' not in df.columns:
-            df['Uraian Satker Final'] = df.get('Uraian Satker', '')
+        if 'Uraian Satker-RINGKAS' not in df.columns:
+            df['Uraian Satker-RINGKAS'] = df.get('Uraian Satker', '')
+        df['Uraian Satker Final'] = df.get('Uraian Satker', '')
         return df
 
-    # Perform the merge and create final column; keep it simple and robust
+    # Perform the merge and create final short-name column; keep it simple and robust
     try:
         df_merged = df.merge(
-            ref[['Kode Satker', 'Uraian Satker-SINGKAT']],
+            ref[['Kode Satker', 'Uraian Satker-SINGKAT']].rename(columns={'Uraian Satker-SINGKAT': 'Uraian Satker-RINGKAS'}),
             on='Kode Satker',
             how='left',
             indicator=False
         )
 
         # Create final name column using reference when available, otherwise fallback to original
-        df_merged['Uraian Satker Final'] = df_merged['Uraian Satker-SINGKAT'].fillna(
+        df_merged['Uraian Satker-RINGKAS'] = df_merged['Uraian Satker-RINGKAS'].fillna(
             df_merged.get('Uraian Satker', '')
         )
 
-        # Drop the reference short-name column (keep final)
+        # Keep a generic final field for backward compatibility
+        df_merged['Uraian Satker Final'] = df_merged['Uraian Satker-RINGKAS']
+
+        # Drop the reference short-name column in case it remains under other names
         df_merged = df_merged.drop(columns=['Uraian Satker-SINGKAT'], errors='ignore')
 
         return df_merged
@@ -472,8 +479,9 @@ def apply_reference_short_names(df):
     except Exception as e:
         # Minimal error notification and fallback
         st.error(f"❌ Gagal menerapkan nama singkat untuk periode {df.get('Bulan', [''])[0]} {df.get('Tahun', [''])[0]}: {e}")
-        if 'Uraian Satker Final' not in df.columns:
-            df['Uraian Satker Final'] = df.get('Uraian Satker', '')
+        if 'Uraian Satker-RINGKAS' not in df.columns:
+            df['Uraian Satker-RINGKAS'] = df.get('Uraian Satker', '')
+        df['Uraian Satker Final'] = df.get('Uraian Satker', '')
         return df
 
 # ===============================================
@@ -484,13 +492,20 @@ def create_satker_column(df):
     Creates 'Satker' column consistently across all data sources.
     Should be called after apply_reference_short_names().
     """
-    if 'Uraian Satker Final' not in df.columns:
-        df['Uraian Satker Final'] = df.get('Uraian Satker', '')
-    
+    if 'Uraian Satker-RINGKAS' not in df.columns:
+        # fallback to older field names
+        if 'Uraian Satker Final' in df.columns:
+            df['Uraian Satker-RINGKAS'] = df['Uraian Satker Final']
+        else:
+            df['Uraian Satker-RINGKAS'] = df.get('Uraian Satker', '')
+
+    # Create Satker display using ringkas
     df['Satker'] = (
-        df['Uraian Satker Final'].astype(str) + 
+        df['Uraian Satker-RINGKAS'].astype(str) + 
         ' (' + df['Kode Satker'].astype(str) + ')'
     )
+    # Keep backward compatible column
+    df['Uraian Satker Final'] = df['Uraian Satker-RINGKAS']
     return df
     
 # HALAMAN 1: DASHBOARD UTAMA (REVISED)
@@ -519,7 +534,6 @@ def page_dashboard():
     # Common: period selection and metrics (keep at top of Highlights)
     # -------------------------
     with tab_highlights:
-        st.markdown("---")
         st.markdown("## 🎯 Highlights Kinerja Satker")
 
         # Single-row layout for period + metrics
@@ -687,87 +701,299 @@ def page_dashboard():
             st.success("✅ Semua satker sudah optimal untuk Deviasi Hal 3 DIPA")
 
     # -------------------------
-    # Table tab
+    # Table tab (with new Periodik default)
     # -------------------------
     with tab_table:
-        st.markdown("---")
         st.subheader("📋 Tabel Detail Satker")
 
-        col1, col2 = st.columns([2, 1])
+        # Create sub-tabs inside the table area: Periodik (default) and Detail Satker (legacy)
+        tab_periodik, tab_detail = st.tabs(["📆 Periodik", "📋 Detail Satker"])
 
-        with col1:
-            view_mode = st.radio(
-                "Tampilan",
-                options=['aspek', 'komponen'],
-                format_func=lambda x: 'Berdasarkan Aspek' if x == 'aspek' else 'Berdasarkan Komponen',
-                horizontal=True
+        # -------------------------
+        # PERIODIK TABLE
+        # -------------------------
+        with tab_periodik:
+            st.markdown("#### Periodik — ringkasan per bulan / triwulan")
+
+            # --- determine available years from all data in session
+            years = set()
+            for k, df_period in st.session_state.data_storage.items():
+                years.update(df_period['Tahun'].astype(str).unique())
+            years = sorted([int(y) for y in years if str(y).strip() != ''], reverse=True)
+            if not years:
+                st.info("Tidak ada data periodik untuk ditampilkan.")
+            else:
+                default_year = years[0]
+                selected_year = st.selectbox("Pilih Tahun", options=years, index=0)
+
+                period_type = st.radio("Jenis Periode", options=['quarterly', 'monthly'], format_func=lambda x: 'Triwulan' if x=='quarterly' else 'Bulanan', horizontal=True)
+
+                indicator_options = [
+                    'Kualitas Perencanaan Anggaran', 'Kualitas Pelaksanaan Anggaran', 'Kualitas Hasil Pelaksanaan Anggaran',
+                    'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran', 'Belanja Kontraktual',
+                    'Penyelesaian Tagihan', 'Pengelolaan UP dan TUP', 'Capaian Output', 'Dispensasi SPM (Pengurang)',
+                    'Nilai Akhir (Nilai Total/Konversi Bobot)'
+                ]
+                default_indicator = 'Deviasi Halaman III DIPA'
+                selected_indicator = st.selectbox("Pilih Indikator", options=indicator_options, index=indicator_options.index(default_indicator) if default_indicator in indicator_options else 0)
+
+                # build dataframe for the selected year across all available periods
+                dfs = []
+                for (mon, yr), df_period in st.session_state.data_storage.items():
+                    try:
+                        if int(yr) == int(selected_year):
+                            dfs.append(df_period.copy())
+                    except Exception:
+                        continue
+                if not dfs:
+                    st.info(f"Tidak ditemukan data untuk tahun {selected_year}.")
+                else:
+                    df_year = pd.concat(dfs, ignore_index=True)
+
+                    # normalize month names and get available months sorted
+                    df_year['Bulan_upper'] = df_year['Bulan'].astype(str).str.strip().str.upper()
+                    months_available = sorted(df_year['Bulan_upper'].unique(), key=lambda m: MONTH_ORDER.get(m, 0))
+
+                    # determine period columns to show
+                    if period_type == 'monthly':
+                        # sort months using MONTH_ORDER, then format nicely (capitalize)
+                        months_sorted = sorted(
+                            [m for m in months_available if m and MONTH_ORDER.get(m, 0) > 0],
+                            key=lambda m: MONTH_ORDER.get(m, 0)
+                        )
+                        display_period_cols = [m.capitalize() for m in months_sorted]
+                        # rename columns to match display order
+                        for m in months_sorted:
+                            display_name = m.capitalize()
+                            if m in df_agg.columns:
+                                df_agg.rename(columns={m: display_name}, inplace=True)
+                    else:
+                        # quarterly: check whether end-month for each quarter exists; map to Tw I..IV
+                        quarter_map = {
+                            'Tw I': 'MARET',
+                            'Tw II': 'JUNI',
+                            'Tw III': 'SEPTEMBER',
+                            'Tw IV': 'DESEMBER'
+                        }
+                        period_cols = []
+                        for tw, end_month in quarter_map.items():
+                            if end_month in months_available:
+                                period_cols.append(tw)
+
+                    # Build a pivot table: index Kode BA, Kode Satker, Uraian Satker-RINGKAS
+                    key_cols = ['Kode BA', 'Kode Satker', 'Uraian Satker-RINGKAS']
+                    # ensure these exist in df_year
+                    for c in key_cols:
+                        if c not in df_year.columns:
+                            df_year[c] = ''
+
+                    # for monthly, pivot by month names => use month uppercase
+                    records = []
+                    for _, row in df_year.iterrows():
+                        rec = {
+                            'Kode BA': row.get('Kode BA', ''),
+                            'Kode Satker': row.get('Kode Satker', ''),
+                            'Uraian Satker-RINGKAS': row.get('Uraian Satker-RINGKAS', row.get('Uraian Satker Final', row.get('Uraian Satker','')))
+                        }
+                        month_up = str(row.get('Bulan','')).strip().upper()
+                        if period_type == 'monthly':
+                            rec[month_up] = row.get(selected_indicator, np.nan)
+                        else:
+                            # quarterly: map month to Tw label if it is one of end months
+                            tw_label = None
+                            if month_up in ('MARET','MARET'.upper()):
+                                tw_label = 'Tw I'
+                            if month_up in ('JUNI','JUNI'.upper()):
+                                tw_label = 'Tw II'
+                            if month_up in ('SEPTEMBER','SEPTEMBER'.upper()):
+                                tw_label = 'Tw III'
+                            if month_up in ('DESEMBER','DESEMBER'.upper()):
+                                tw_label = 'Tw IV'
+                            if tw_label:
+                                rec[tw_label] = row.get(selected_indicator, np.nan)
+                        records.append(rec)
+
+                    df_rec = pd.DataFrame(records)
+                    if df_rec.empty:
+                        st.info("Tidak ada data detail untuk indikator/periode yang dipilih.")
+                    else:
+                        # aggregate by Kode Satker (take last non-null value for each period column)
+                        agg_dict = {}
+                        # identify all possible period columns present in df_rec
+                        possible_period_cols = [c for c in df_rec.columns if c not in ['Kode BA','Kode Satker','Uraian Satker-RINGKAS']]
+                        for c in possible_period_cols:
+                            agg_dict[c] = lambda x: x.dropna().astype(float).iloc[-1] if len(x.dropna())>0 else np.nan
+
+                        df_agg = df_rec.groupby(['Kode BA','Kode Satker','Uraian Satker-RINGKAS']).agg(agg_dict).reset_index()
+
+                        # Rename monthly period columns to nicer display (capitalize)
+                        display_period_cols = []
+                        if period_type == 'monthly':
+                            # convert keys to capitalized form e.g. JANUARI -> Januari
+                            month_display = []
+                            for m in possible_period_cols:
+                                m_up = m.upper()
+                                if MONTH_ORDER.get(m_up,0)>0:
+                                    display_name = m_up.capitalize()
+                                    df_agg.rename(columns={m: display_name}, inplace=True)
+                                    display_period_cols.append(display_name)
+                        else:
+                            # quarter names already Tw I..IV
+                            for p in ['Tw I','Tw II','Tw III','Tw IV']:
+                                if p in df_agg.columns:
+                                    display_period_cols.append(p)
+
+                        # remove period columns that are all NaN (not available yet)
+                        display_period_cols = [c for c in display_period_cols if not df_agg[c].isna().all()]
+
+                        # Calculate 'latest' value per row based on the last period column available
+                        if display_period_cols:
+                            last_col = display_period_cols[-1]
+                            df_agg['Latest_Value'] = df_agg[last_col]
+                        else:
+                            df_agg['Latest_Value'] = np.nan
+
+                        # Compute ranking: higher value => better rank (1 = highest)
+                        df_agg['Peringkat'] = df_agg['Latest_Value'].rank(ascending=False, method='dense').astype('Int64')
+
+                        # Sort display: by default initial display order bottom ranking first to top ranking last
+                        df_agg_sorted = df_agg.sort_values(by=['Peringkat'], ascending=True)  # ascending: rank 1 at bottom?
+                        # we want bottom first (largest numeric rank at top), so sort by Peringkat descending
+                        df_agg_sorted = df_agg.sort_values(by=['Peringkat'], ascending=False)
+
+                        # Reorder columns: Peringkat, Kode BA, Kode Satker, Uraian Satker-RINGKAS, then periods
+                        final_cols = ['Peringkat','Kode BA','Kode Satker','Uraian Satker-RINGKAS'] + display_period_cols
+                        # ensure cols exist
+                        for c in final_cols:
+                            if c not in df_agg_sorted.columns:
+                                df_agg_sorted[c] = np.nan
+
+                        df_display = df_agg_sorted[final_cols].copy()
+
+                        # -------------------------
+                        # Search widget for Periodik
+                        # -------------------------
+                        search_query = st.text_input("🔎 Cari (Periodik) — ketik untuk filter di semua kolom", value="", key='search_periodik')
+                        if search_query:
+                            q = str(search_query).strip().lower()
+                            mask = df_display.apply(lambda row: row.astype(str).str.lower().str.contains(q, na=False).any(), axis=1)
+                            df_display_filtered = df_display[mask].copy()
+                        else:
+                            df_display_filtered = df_display.copy()
+
+                        # -------------------------
+                        # Trend gimmick (cell coloring based on last two periods)
+                        # -------------------------
+                        def color_trend(row):
+                            styles = []
+                            # compare last two available period columns
+                            vals = [row[c] for c in display_period_cols if pd.notna(row[c])]
+                            if len(vals) >= 2:
+                                if vals[-1] > vals[-2]:
+                                    # uptrend
+                                    color = 'background-color: #c6efce'  # light green
+                                elif vals[-1] < vals[-2]:
+                                    color = 'background-color: #f8d7da'  # light red
+                                else:
+                                    color = ''
+                            else:
+                                color = ''
+                            # apply color to last column cell only for visual cue
+                            for i, c in enumerate(df_display_filtered.columns):
+                                if c == display_period_cols[-1]:
+                                    styles.append(color)
+                                else:
+                                    styles.append('')
+                            return styles
+
+                        # Apply highlight for top 3 ranks separately
+                        def highlight_top(s):
+                            if s.name == 'Peringkat':
+                                return ['background-color: gold' if (pd.to_numeric(v, errors='coerce') <= 3) else '' for v in s]
+                            return ['' for _ in s]
+
+                        # Combine styler: color last period cell per-row and highlight Peringkat
+                        styler = df_display_filtered.style.format(precision=2)
+                        # apply per-row color for last period
+                        if display_period_cols:
+                            styler = styler.apply(lambda r: color_trend(r), axis=1)
+                        styler = styler.apply(highlight_top)
+
+                        st.dataframe(styler, use_container_width=True, height=600)
+
+        # -------------------------
+        # DETAIL SATKER (legacy table) — updated label names
+        # -------------------------
+        with tab_detail:
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                view_mode = st.radio(
+                    "Tampilan",
+                    options=['aspek', 'komponen'],
+                    format_func=lambda x: 'Berdasarkan Aspek' if x == 'aspek' else 'Berdasarkan Komponen',
+                    horizontal=True
+                )
+
+            with col2:
+                st.write("")  # placeholder to keep alignment
+
+            # Kolom yang ditampilkan (Konversi Bobot removed) — use Uraian Satker-RINGKAS
+            display_columns = ['Peringkat', 'Kode BA', 'Kode Satker', 'Uraian Satker-RINGKAS']
+
+            if view_mode == 'aspek':
+                display_columns += [
+                    'Kualitas Perencanaan Anggaran',
+                    'Kualitas Pelaksanaan Anggaran',
+                    'Kualitas Hasil Pelaksanaan Anggaran'
+                ]
+                df_display = df[display_columns + ['Nilai Total',
+                                                   'Dispensasi SPM (Pengurang)',
+                                                   'Nilai Akhir (Nilai Total/Konversi Bobot)']].copy()
+            else:
+                component_cols = [
+                    'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran',
+                    'Belanja Kontraktual', 'Penyelesaian Tagihan', 
+                    'Pengelolaan UP dan TUP', 'Capaian Output'
+                ]
+
+                df_display = df[display_columns + ['Nilai Total',
+                                                   'Dispensasi SPM (Pengurang)',
+                                                   'Nilai Akhir (Nilai Total/Konversi Bobot)']].copy()
+
+                # fill component values directly from df (Nilai)
+                for col in component_cols:
+                    df_display[col] = df.get(col, 0)
+
+                # Reorder columns
+                final_cols = display_columns + component_cols + ['Nilai Total',
+                                                                 'Dispensasi SPM (Pengurang)',
+                                                                 'Nilai Akhir (Nilai Total/Konversi Bobot)']
+                df_display = df_display[final_cols]
+
+            # -------------------------
+            # Search widget: filter across all columns (case-insensitive substring)
+            # -------------------------
+            search_query = st.text_input("🔎 Cari (ketik untuk filter di semua kolom)", value="", help="Cari teks pada semua kolom (case-insensitive).", key='search_detail')
+            if search_query:
+                q = str(search_query).strip().lower()
+                mask = df_display.apply(lambda row: row.astype(str).str.lower().str.contains(q, na=False).any(), axis=1)
+                df_display_filtered = df_display[mask].copy()
+            else:
+                df_display_filtered = df_display.copy()
+
+            # Styling untuk tabel (same highlight_top)
+            def highlight_top(s):
+                if s.name == 'Peringkat':
+                    return ['background-color: gold' if (pd.to_numeric(v, errors='coerce') <= 3) else '' for v in s]
+                return ['' for _ in s]
+
+            # Render table
+            st.dataframe(
+                df_display_filtered.style.apply(highlight_top).format(precision=2),
+                use_container_width=True,
+                height=600
             )
-
-        # NOTE: removed Bobot / Nilai Terbobot selector — only 'Nilai' is available
-        # (so komponen view will always show the numeric 'Nilai' columns)
-        # with col2 we can put other controls later if needed
-        with col2:
-            st.write("")  # placeholder to keep alignment
-
-        # Kolom yang ditampilkan (Konversi Bobot removed)
-        display_columns = ['Peringkat', 'Kode BA', 'Kode Satker', 'Uraian Satker']
-
-        if view_mode == 'aspek':
-            display_columns += [
-                'Kualitas Perencanaan Anggaran',
-                'Kualitas Pelaksanaan Anggaran',
-                'Kualitas Hasil Pelaksanaan Anggaran'
-            ]
-            # Konversi Bobot removed from displayed columns
-            df_display = df[display_columns + ['Nilai Total',
-                                               'Dispensasi SPM (Pengurang)',
-                                               'Nilai Akhir (Nilai Total/Konversi Bobot)']].copy()
-        else:
-            # Komponen view: always show actual "Nilai" (no Bobot / Nilai Terbobot switch)
-            component_cols = [
-                'Revisi DIPA', 'Deviasi Halaman III DIPA', 'Penyerapan Anggaran',
-                'Belanja Kontraktual', 'Penyelesaian Tagihan', 
-                'Pengelolaan UP dan TUP', 'Capaian Output'
-            ]
-
-            df_display = df[display_columns + ['Nilai Total',
-                                               'Dispensasi SPM (Pengurang)',
-                                               'Nilai Akhir (Nilai Total/Konversi Bobot)']].copy()
-
-            # fill component values directly from df (Nilai)
-            for col in component_cols:
-                df_display[col] = df.get(col, 0)
-
-            # Reorder columns (Konversi Bobot removed)
-            final_cols = display_columns + component_cols + ['Nilai Total',
-                                                             'Dispensasi SPM (Pengurang)',
-                                                             'Nilai Akhir (Nilai Total/Konversi Bobot)']
-            df_display = df_display[final_cols]
-
-        # -------------------------
-        # Search widget: filter across all columns (case-insensitive substring)
-        # -------------------------
-        search_query = st.text_input("🔎 Cari (ketik untuk filter di semua kolom)", value="", help="Cari teks pada semua kolom (case-insensitive).")
-        if search_query:
-            q = str(search_query).strip().lower()
-            # Build mask: any column contains q as substring
-            mask = df_display.apply(lambda row: row.astype(str).str.lower().str.contains(q, na=False).any(), axis=1)
-            df_display_filtered = df_display[mask].copy()
-        else:
-            df_display_filtered = df_display.copy()
-
-        # Styling untuk tabel (same highlight_top)
-        def highlight_top(s):
-            if s.name == 'Peringkat':
-                return ['background-color: gold' if (pd.to_numeric(v, errors='coerce') <= 3) else '' for v in s]
-            return ['' for _ in s]
-
-        # Render table
-        st.dataframe(
-            df_display_filtered.style.apply(highlight_top).format(precision=2),
-            use_container_width=True,
-            height=600
-        )
 
 # HALAMAN 2: DASHBOARD INTERNAL KPPN (Protected)
 def page_trend():
@@ -883,8 +1109,6 @@ def page_trend():
     
     with col1:
         # 🔍 DETAILED ERROR CHECKING
-        st.write("🔍 Checking data quality...")
-        
         # Map month names to numbers
         df_all['Month_Num'] = df_all['Bulan'].str.strip().str.upper().map(MONTH_ORDER)
         
@@ -940,9 +1164,7 @@ def page_trend():
                 lambda x: f"{x['Tahun_Int']:04d}-{x['Month_Num_Int']:02d}", 
                 axis=1
             )
-            
-            st.success(f"✅ Data valid - {len(df_all)} baris dari {df_all['Period'].nunique()} periode")
-            
+                        
         except Exception as e:
             st.error(f"❌ **ERROR saat membuat Period_Sort:** {str(e)}")
             
