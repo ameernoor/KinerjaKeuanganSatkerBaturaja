@@ -21,34 +21,11 @@ MONTH_ORDER = {
     "JULI": 7, "AGUSTUS": 8, "SEPTEMBER": 9, "OKTOBER": 10, 
     "NOVEMBER": 11, "NOPEMBER": 11, "DESEMBER": 12
 }
-
 # Konfigurasi halaman
 st.set_page_config(
     page_title="Dashboard IKPA KPPN Baturaja",
     page_icon="📊",
     layout="wide"
-)
-
-# --- Make tabs more visible ---
-st.markdown(
-    """
-    <style>
-    /* Bigger, bolder tabs */
-    div[data-baseweb="tab"] > button {
-        font-size: 1.1rem !important;      /* increase size */
-        font-weight: 600 !important;       /* make bold */
-        padding: 10px 16px !important;     /* add padding */
-    }
-
-    /* Optional: highlight active tab more strongly */
-    div[data-baseweb="tab"] > button[data-state="active"] {
-        color: #ffffff !important;
-        background-color: #1f77b4 !important;  /* or your theme color */
-        border-radius: 8px 8px 0 0 !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
 )
 
 # Path ke file template (akan diatur di session state)
@@ -543,7 +520,7 @@ def page_dashboard():
     # -------------------------
     with tab_highlights:
         st.markdown("---")
-        st.markdown("# 🎯 Highlights Kinerja Satker")
+        st.markdown("## 🎯 Highlights Kinerja Satker")
 
         # Single-row layout for period + metrics
         col_period, col1, col2, col3, col4 = st.columns([1, 1, 1, 1, 1])
